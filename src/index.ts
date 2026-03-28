@@ -24,7 +24,8 @@
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { resolveConfig, injectGsdConfigResolver, isEnabled } from "./config.js";
-import { injectDeps } from "./dispatcher.js";
+import { injectDeps, injectListProjects } from "./dispatcher.js";
+import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
 
 let loop: PollLoop | null = null;
@@ -80,6 +81,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   injectGsdConfigResolver(resolveRemoteConfig);
   injectDeps(pi, statusApi);
+  injectListProjects(listProjects);
 
   const config = resolveConfig(prefs);
   if (!config) {

@@ -27,12 +27,12 @@ let _pi: ExtensionAPI | null = null;
 let _statusApi: GsdStatusApi | null = null;
 let _listProjects: ListProjectsFn | null = null;
 
-export function injectDeps(pi: ExtensionAPI, statusApi: GsdStatusApi | null): void {
+export function injectDeps(pi: ExtensionAPI | null, statusApi: GsdStatusApi | null): void {
   _pi = pi;
   _statusApi = statusApi;
 }
 
-export function injectListProjects(fn: ListProjectsFn): void {
+export function injectListProjects(fn: ListProjectsFn | null): void {
   _listProjects = fn;
 }
 
@@ -96,6 +96,7 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
           "/pause — Pause auto-mode",
           "/status — Show current state",
           "/help — This message",
+          "/projects — List GSD projects",
         ].join("\n"),
         stateChanged: false,
       };
