@@ -2,7 +2,7 @@
 
 Remote control your GSD auto-mode from Telegram. Start, stop, pause, and monitor auto-mode execution with instant push notifications on task/slice/milestone completion.
 
-**Status**: M001 complete (core plumbing + full command set). M003 in progress (rich notifications).
+**Status**: M001 complete — core plumbing, full command set, and proactive push notifications.
 
 ## Why This Exists
 
@@ -122,8 +122,6 @@ Or if idle:
 ← ⚪ Auto-mode idle
 ```
 
-M003 will enhance this to show remaining tasks and estimated time.
-
 ### `/projects` — List all GSD projects
 
 ```
@@ -173,6 +171,7 @@ Telegram Bot
 |--------|---------|-----------|
 | `src/auth.ts` | Validate Telegram user ID against allowlist | ✅ Yes |
 | `src/config.ts` | Load preferences + env vars | ✅ Yes |
+| `src/notifier.ts` | Poll STATE.md and send proactive notifications | ✅ Yes |
 | `src/poller.ts` | Long-poll Telegram getUpdates | ✅ Yes |
 | `src/dispatcher.ts` | Parse commands + execute actions | ✅ Yes (injectable) |
 | `src/responder.ts` | Format + send Telegram messages | ✅ Yes |
@@ -267,25 +266,28 @@ telegram_remote:
 npm test
 ```
 
-Runs 30 tests covering:
+Runs 61 tests across 6 suites covering:
 - Telegram user ID validation
 - Command parsing (case-insensitive, whitespace-tolerant)
 - Dispatcher command routing
-- Poll loop lifecycle
+- Poll loop lifecycle and dispatch integration
 - listProjects() with real filesystem fixtures
 - Responder message formatting
+- Proactive notifier (STATE.md polling, task/slice/milestone events)
 
 All tests are pure-module (no GSD, no network calls).
 
 ### Manual Testing with Test Project
 
-A lightweight test project is included for rapid iteration:
+A lightweight test project is provided for rapid end-to-end verification:
 
 ```bash
 cd D:/AiProjects/gsd-test-telegram
 gsd auto
 # Watch Telegram for notifications as 27 trivial tasks complete in ~30 seconds
 ```
+
+The test project has 3 milestones × 3 slices × 3 tasks = 27 simple write-one-file tasks, each completing in seconds. Use it to verify the full notification pipeline without a real project.
 
 ### Integration Testing
 
@@ -304,13 +306,12 @@ After M003 (proactive notifications), run:
 - ✅ `/status` (basic: idle/running/paused)
 - ✅ `/help` and `/projects` commands
 - ✅ All core modules tested independently
+- ✅ Proactive push notifications on task/slice/milestone completion
+- ✅ STATE.md polling with configurable interval
+- ✅ Full integration test project at `D:/AiProjects/gsd-test-telegram`
 
-### M003 In Progress
-- 🔄 Proactive push notifications on completion
-- 🔄 Rich `/status` showing remaining tasks and ETA
-- 🔄 Full integration test with real notifications
-
-### Future (M004+)
+### Future (M002+)
+- Rich `/status` showing remaining tasks and ETA
 - Cross-process control (different terminal session)
 - Project aliases (`/auto strategy` instead of folder name)
 - Dashboard web UI (intentionally deferred)
@@ -369,6 +370,7 @@ gsd-telegram-remote/
 ├── src/
 │   ├── auth.ts           — Telegram user ID validation
 │   ├── config.ts         — Load preferences + env vars
+│   ├── notifier.ts        — Proactive push notifications (STATE.md polling)
 │   ├── poller.ts         — Long-poll Telegram updates
 │   ├── dispatcher.ts      — Command parsing + routing
 │   ├── responder.ts       — Format + send messages
@@ -378,7 +380,9 @@ gsd-telegram-remote/
 ├── tests/
 │   ├── auth.test.ts
 │   ├── dispatcher.test.ts
+│   ├── notifier.test.ts
 │   ├── poller.test.ts
+│   ├── poller-dispatch.test.ts
 │   ├── projects.test.ts
 │   └── __mocks__/@gsd/pi-coding-agent.ts
 ├── jest.config.js         — Jest + ts-jest ESM config
@@ -390,7 +394,7 @@ gsd-telegram-remote/
 │   ├── DECISIONS.md
 │   ├── KNOWLEDGE.md
 │   ├── milestones/M001/ROADMAP.md
-│   └── milestones/M001/slices/S01-S03/
+│   └── milestones/M001/slices/S01-S04/
 └── README.md
 ```
 
