@@ -14,18 +14,26 @@
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import type { RemoteCommand, DispatchResult } from "./types.js";
+import type { ProjectEntry } from "./projects.js";
 
 export interface GsdStatusApi {
   isAutoActive: () => boolean;
   isAutoPaused: () => boolean;
 }
 
+type ListProjectsFn = () => Promise<ProjectEntry[]>;
+
 let _pi: ExtensionAPI | null = null;
 let _statusApi: GsdStatusApi | null = null;
+let _listProjects: ListProjectsFn | null = null;
 
 export function injectDeps(pi: ExtensionAPI, statusApi: GsdStatusApi | null): void {
   _pi = pi;
   _statusApi = statusApi;
+}
+
+export function injectListProjects(fn: ListProjectsFn): void {
+  _listProjects = fn;
 }
 
 /** Parse the raw message text into a typed command. */
@@ -37,6 +45,8 @@ export function parseCommand(text: string): RemoteCommand {
   if (clean === "/pause" || clean === "/gsd pause" || clean === "pause") return { type: "pause" };
   if (clean === "/status" || clean === "/gsd status" || clean === "status") return { type: "status" };
   if (clean === "/help" || clean === "help") return { type: "help" };
+
+  if (clean === "/projects" || clean === "projects") return { type: "projects" };
 
   return { type: "unknown", raw: text };
 }
@@ -89,6 +99,23 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
         ].join("\n"),
         stateChanged: false,
       };
+
+    case "projects": {
+      if (_listProjects) {
+        const projects = await _listProjects();
+        if (projects.length === 0) {
+          return { reply: "📂 No projects found.", stateChanged: false };
+        }
+        const lines = projects.map((p) =>
+          p.description ? `• <b>${p.name}</b> — ${p.description}` : `• <b>${p.name}</b>`
+        );
+        return {
+          reply: ["<b>GSD Projects</b>", "", ...lines].join("\n"),
+          stateChanged: false,
+        };
+      }
+      return { reply: "⚠️ Projects listing not available.", stateChanged: false };
+    }
 
     case "unknown":
       return {

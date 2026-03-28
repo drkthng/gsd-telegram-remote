@@ -44,6 +44,7 @@ export type RemoteCommand =
   | { type: "pause" }
   | { type: "status" }
   | { type: "help" }
+  | { type: "projects" }
   | { type: "unknown"; raw: string };
 
 /** What the dispatcher returns after executing a command. */
