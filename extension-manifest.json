@@ -1,0 +1,11 @@
+{
+  "id": "gsd-telegram-remote",
+  "name": "GSD Telegram Remote Control",
+  "version": "0.1.0",
+  "description": "Control GSD auto-mode from Telegram — start, stop, pause, resume, status",
+  "tier": "community",
+  "requires": { "platform": ">=2.33.0" },
+  "provides": {
+    "commands": ["telegram-remote"]
+  }
+}
