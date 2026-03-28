@@ -27,6 +27,7 @@ import { resolveConfig, injectGsdConfigResolver, isEnabled } from "./config.js";
 import { injectDeps, injectListProjects } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
+import { type GsdAutoState, EMPTY_STATE, computeNotifications } from "./notifier.js";
 
 let loop: PollLoop | null = null;
 
@@ -112,94 +113,34 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
   });
 
   // ── Proactive notifications via agent_end events ──────────────────────────
-  // GSD's auto-mode never calls sendRemoteNotification(). The user currently only
-  // receives Telegram messages for ask_user_questions prompts. We add push
-  // notifications for the events that matter.
-  //
-  // Strategy: inspect ui.notify calls by hooking into the GSD state machine's
-  // output. The cleanest available signal without GSD internals is the
-  // ctx.ui.notify text surfaced in auto-mode — but extensions can't intercept
-  // that. Instead, we watch agent_end (each unit completes) and read the GSD
-  // STATE.md to detect transitions.
-  //
-  // Simpler and more reliable: hook the cmux/notification event bus that GSD
-  // already fires for every sendDesktopNotification call. Those events carry
-  // the exact same title+message GSD would show on the desktop.
-  //
-  // Fallback: subscribe to agent_end and compare STATE.md before/after.
-  // We use the desktop notification hook path — it's the only non-invasive tap
-  // on every meaningful auto-mode event (milestone complete, blocked, budget, etc.)
+  // Single handler reads GSD state after each unit completes and delegates all
+  // transition logic to computeNotifications() in src/notifier.ts (pure, testable).
 
-  let previousState = { phase: "", mid: "", taskId: "" };
+  let prevState: GsdAutoState = EMPTY_STATE;
 
-  pi.on("agent_end", async () => {
+  pi.on('agent_end', async () => {
     if (!loop) return;
-
-    // Read STATE.md to detect transitions
     try {
-      const { importExtensionModule } = await import("@gsd/pi-coding-agent");
-      const stateModule = await importExtensionModule(
-        import.meta.url,
-        "../gsd/state.js",
-      ).catch(() => null) as any;
-
-      if (!stateModule?.deriveState) return;
-
-      const cwd = process.cwd();
-      const state = await stateModule.deriveState(cwd).catch(() => null);
-      if (!state) return;
-
-      const mid = state.activeMilestone?.id ?? "";
-      const taskId = state.activeTask?.id ?? "";
-      const phase = state.phase ?? "";
-
-      // Task completed (taskId changed away from a running task)
-      if (previousState.taskId && previousState.taskId !== taskId && previousState.mid === mid) {
-        await loop.notify(`✅ Task <b>${previousState.taskId}</b> complete`);
+      const { importExtensionModule } = await import('@gsd/pi-coding-agent');
+      const stateModule = await importExtensionModule(import.meta.url, '../gsd/state.js').catch(() => null) as any;
+      const rawState = stateModule?.deriveState ? await stateModule.deriveState(process.cwd()).catch(() => null) : null;
+      const curr: GsdAutoState = {
+        phase: rawState?.phase ?? '',
+        mid: rawState?.activeMilestone?.id ?? '',
+        sliceId: rawState?.activeSlice?.id ?? '',
+        taskId: rawState?.activeTask?.id ?? '',
+        blockers: rawState?.blockers ?? [],
+        isActive: statusApi?.isAutoActive() ?? false,
+        isPaused: statusApi?.isAutoPaused() ?? false,
+      };
+      const msgs = computeNotifications(prevState, curr);
+      prevState = curr;
+      for (const msg of msgs) {
+        await loop.notify(msg);
       }
-
-      // Slice completed (detect via slice transition)
-      const sliceId = state.activeSlice?.id ?? "";
-      const prevSliceId = (previousState as any).sliceId ?? "";
-      if (prevSliceId && prevSliceId !== sliceId && previousState.mid === mid) {
-        await loop.notify(`🔷 Slice <b>${prevSliceId}</b> complete`);
-      }
-
-      // Milestone completed
-      if (previousState.mid && previousState.mid !== mid && previousState.phase !== "complete") {
-        await loop.notify(`🏁 Milestone <b>${previousState.mid}</b> complete!`);
-      }
-
-      // Auto-mode blocked
-      if (phase === "blocked" && previousState.phase !== "blocked") {
-        const blockers = state.blockers?.join(", ") ?? "unknown";
-        await loop.notify(`🚫 <b>Blocked:</b> ${blockers}`);
-      }
-
-      previousState = { phase, mid, taskId, ...(sliceId ? { sliceId } : {}) } as any;
     } catch {
-      // Non-fatal — notification failures should never affect the main loop
+      // Non-fatal — notification failures must not affect the main loop
     }
-  });
-
-  // Auto-mode paused/stopped — detect via isAutoPaused state change
-  let wasActive = false;
-  let wasPaused = false;
-
-  pi.on("agent_end", () => {
-    if (!loop || !statusApi) return;
-
-    const active = statusApi.isAutoActive();
-    const paused = statusApi.isAutoPaused();
-
-    if (wasActive && !active && !paused) {
-      void loop.notify("⏹️ Auto-mode stopped.");
-    } else if (wasActive && !active && paused) {
-      void loop.notify("⏸️ Auto-mode paused — send /auto to resume.");
-    }
-
-    wasActive = active;
-    wasPaused = paused;
   });
 
   // Shutdown: stop poll loop cleanly
