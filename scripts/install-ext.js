@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * install-ext.js — Install the compiled dist/ into the GSD extension directory.
+ * install-ext.js — Install the compiled dist/ into the GSD community extension directory (~/.pi).
  *
  * Usage:
  *   node scripts/install-ext.js           — install
@@ -15,7 +15,10 @@ import path from 'path';
 import os from 'os';
 
 const EXT_ID = 'gsd-telegram-remote';
-const EXT_DIR = path.join(os.homedir(), '.gsd', 'agent', 'extensions', EXT_ID);
+// Community extensions must live in ~/.pi, NOT ~/.gsd.
+// ~/.gsd is reserved for bundled extensions synced from the gsd-pi package;
+// anything placed there is silently ignored by the loader. See gsd-build/gsd-2#3133.
+const EXT_DIR = path.join(os.homedir(), '.pi', 'agent', 'extensions', EXT_ID);
 const PROJECT_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), '..');
 const DIST_SRC = path.join(PROJECT_ROOT, 'dist');
 const DIST_DEST = path.join(EXT_DIR, 'dist');
@@ -34,6 +37,15 @@ if (unlink) {
 }
 
 // --- Install ---
+
+// Clean up stale copy in ~/.gsd/agent/extensions/ if it exists.
+// ~/.gsd is reserved for bundled extensions — a copy there shadows the ~/.pi
+// copy and causes the loader to skip it entirely (treated as bundled key). See gsd-build/gsd-2#3133.
+const staleGsdDir = path.join(os.homedir(), '.gsd', 'agent', 'extensions', EXT_ID);
+if (fs.existsSync(staleGsdDir)) {
+  fs.rmSync(staleGsdDir, { recursive: true, force: true });
+  console.log(`[install-ext] Removed stale ~/.gsd copy at ${staleGsdDir}`);
+}
 
 // Ensure extension root exists
 fs.mkdirSync(EXT_DIR, { recursive: true });
