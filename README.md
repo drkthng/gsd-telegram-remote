@@ -2,7 +2,7 @@
 
 Remote control your GSD auto-mode from Telegram. Start, stop, pause, and monitor auto-mode execution with instant push notifications on task/slice/milestone completion.
 
-**Status**: M001 complete — core plumbing, full command set, and proactive push notifications.
+**Status**: M001–M004 complete — rich M/S/T path notifications, budget alerts, live transport validated.
 
 ## Why This Exists
 
@@ -219,6 +219,23 @@ telegram_remote:
 | `POLL_TIMEOUT_SECONDS` | Long-poll timeout | `30` |
 | `POLL_INTERVAL_MS` | Retry delay on error | `5000` (5s) |
 
+### Budget Alerts
+
+The extension sends proactive budget warnings when token/cost usage crosses stepped thresholds. Configure the ceiling in `~/.gsd/agent/preferences.md`:
+
+```yaml
+telegram_remote:
+  budget_ceiling: 5.00   # USD — alert when cost crosses 75%, 80%, 90%, 100% of ceiling
+```
+
+Alert thresholds:
+- **75%** — ⚠️ Budget 75%: $X.XX / $5.00
+- **80%** — ⚠️ Budget 80%: $X.XX / $5.00
+- **90%** — ⚠️ Budget 90%: $X.XX / $5.00
+- **100%** — 🚨 Budget 100%: $X.XX / $5.00 (ceiling reached)
+
+Each threshold fires at most once per auto-mode session. Set `budget_ceiling: 0` or omit the key to disable budget alerts entirely.
+
 ## Workflow: Start to Finish
 
 ### Scenario: Kick off a 30-minute milestone
@@ -238,10 +255,13 @@ telegram_remote:
 4. **Extension monitors** `.gsd/STATE.md` for transitions:
    ```
    T01 complete ✅
-   → Sends: "✅ T01: Research Data Pipeline complete (2m 30s)"
+   → Sends: "✅ Task M001/S01/T01 complete"
 
    S01 complete 🔷
-   → Sends: "🔷 S01: Data Collection & Validation complete (15m)"
+   → Sends: "🔷 Slice M001/S01 complete"
+
+   M001 complete 🏁
+   → Sends: "🏁 Milestone M001 complete!"
    ```
 
 5. **You get notified in real-time** without checking the terminal
@@ -266,7 +286,7 @@ telegram_remote:
 npm test
 ```
 
-Runs 61 tests across 6 suites covering:
+Runs 79 tests across 6 suites covering:
 - Telegram user ID validation
 - Command parsing (case-insensitive, whitespace-tolerant)
 - Dispatcher command routing
@@ -301,7 +321,7 @@ After M003 (proactive notifications), run:
 
 ## Limitations & Future Work
 
-### M001 Complete
+### M001–M004 Complete
 - ✅ `/auto`, `/stop`, `/pause` commands
 - ✅ `/status` (basic: idle/running/paused)
 - ✅ `/help` and `/projects` commands
@@ -309,8 +329,11 @@ After M003 (proactive notifications), run:
 - ✅ Proactive push notifications on task/slice/milestone completion
 - ✅ STATE.md polling with configurable interval
 - ✅ Full integration test project at `D:/AiProjects/gsd-test-telegram`
+- ✅ Rich M/S/T path format in notifications (e.g. `M001/S01/T01`)
+- ✅ Budget alerts at 75%/80%/90%/100% of configured ceiling
+- ✅ Live transport validated — 4/4 Telegram messages delivered in smoke test
 
-### Future (M002+)
+### Future
 - Rich `/status` showing remaining tasks and ETA
 - Cross-process control (different terminal session)
 - Project aliases (`/auto strategy` instead of folder name)

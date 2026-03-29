@@ -42,12 +42,12 @@ export function computeNotifications(prev: GsdAutoState, curr: GsdAutoState): st
 
   // Task complete
   if (prev.taskId && curr.taskId !== prev.taskId && curr.mid === prev.mid) {
-    msgs.push(`✅ Task <b>${prev.taskId}</b> complete`);
+    msgs.push(`✅ Task <b>${prev.mid}/${prev.sliceId}/${prev.taskId}</b> complete`);
   }
 
   // Slice complete
   if (prev.sliceId && curr.sliceId !== prev.sliceId && curr.mid === prev.mid) {
-    msgs.push(`🔷 Slice <b>${prev.sliceId}</b> complete`);
+    msgs.push(`🔷 Slice <b>${prev.mid}/${prev.sliceId}</b> complete`);
   }
 
   // Milestone complete
@@ -71,4 +71,38 @@ export function computeNotifications(prev: GsdAutoState, curr: GsdAutoState): st
   }
 
   return msgs;
+}
+
+/**
+ * Returns the current budget alert threshold level for a given percentage.
+ * Implements the same stepped-threshold logic as GSD's built-in getBudgetAlertLevel.
+ */
+function getBudgetAlertLevelLocal(pct: number): 0 | 75 | 80 | 90 | 100 {
+  if (pct >= 100) return 100;
+  if (pct >= 90) return 90;
+  if (pct >= 80) return 80;
+  if (pct >= 75) return 75;
+  return 0;
+}
+
+/**
+ * Returns a Telegram notification string if the budget level has crossed a new threshold,
+ * or null if no new threshold was crossed or ceiling is undefined/zero.
+ *
+ * @param prevLevel - previous alert level (0 | 75 | 80 | 90 | 100)
+ * @param cost      - current dollar cost
+ * @param ceiling   - budget ceiling in dollars (undefined = feature disabled)
+ */
+export function computeBudgetAlert(
+  prevLevel: number,
+  cost: number,
+  ceiling: number | undefined
+): { message: string; newLevel: number } | null {
+  if (!ceiling) return null;
+  const pct = (cost / ceiling) * 100;
+  const newLevel = getBudgetAlertLevelLocal(pct);
+  if (newLevel === prevLevel || newLevel === 0) return null;
+  const emoji = newLevel >= 100 ? '🚨' : '⚠️';
+  const msg = `${emoji} Budget ${newLevel}%: $${cost.toFixed(2)} / $${ceiling.toFixed(2)}`;
+  return { message: msg, newLevel };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { computeNotifications, EMPTY_STATE, GsdAutoState } from '../src/notifier.js';
+import { computeNotifications, computeBudgetAlert, EMPTY_STATE, GsdAutoState } from '../src/notifier.js';
 
 const base: GsdAutoState = {
   phase: 'running',
@@ -18,7 +18,7 @@ describe('computeNotifications', () => {
     const curr: GsdAutoState = { ...base, taskId: 'T02' };
     const result = computeNotifications(prev, curr);
     expect(result).toEqual(expect.arrayContaining([
-      expect.stringContaining('✅ Task <b>T01</b> complete'),
+      expect.stringContaining('✅ Task <b>M001/S01/T01</b> complete'),
     ]));
     // Should NOT fire slice or milestone notifications
     expect(result.some(m => m.includes('🔷'))).toBe(false);
@@ -31,7 +31,7 @@ describe('computeNotifications', () => {
     const curr: GsdAutoState = { ...base, sliceId: 'S02', taskId: 'T01' };
     const result = computeNotifications(prev, curr);
     expect(result).toEqual(expect.arrayContaining([
-      expect.stringContaining('🔷 Slice <b>S01</b> complete'),
+      expect.stringContaining('🔷 Slice <b>M001/S01</b> complete'),
     ]));
     expect(result.some(m => m.includes('🏁'))).toBe(false);
   });
@@ -155,5 +155,101 @@ describe('computeNotifications', () => {
     const curr: GsdAutoState = { ...base, mid: 'M002', sliceId: 'S01' };
     const result = computeNotifications(prev, curr);
     expect(result.some(m => m.includes('🔷'))).toBe(false);
+  });
+});
+
+describe('computeBudgetAlert', () => {
+  // TC-B01: returns null when ceiling is undefined
+  it('TC-B01: returns null when ceiling is undefined', () => {
+    expect(computeBudgetAlert(0, 10, undefined)).toBeNull();
+  });
+
+  // TC-B02: returns null when ceiling is 0
+  it('TC-B02: returns null when ceiling is 0', () => {
+    expect(computeBudgetAlert(0, 10, 0)).toBeNull();
+  });
+
+  // TC-B03: returns null when pct < 75
+  it('TC-B03: returns null when cost is below 75% of ceiling', () => {
+    expect(computeBudgetAlert(0, 7, 100)).toBeNull();
+  });
+
+  // TC-B04: fires at 75% with ⚠️ emoji and correct dollar amounts
+  it('TC-B04: fires at 75% threshold with ⚠️ emoji', () => {
+    const result = computeBudgetAlert(0, 75, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain('⚠️');
+    expect(result!.message).toContain('75%');
+    expect(result!.message).toContain('$75.00');
+    expect(result!.message).toContain('$100.00');
+    expect(result!.newLevel).toBe(75);
+  });
+
+  // TC-B05: fires at 80% with correct message
+  it('TC-B05: fires at 80% threshold with correct message', () => {
+    const result = computeBudgetAlert(0, 80, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain('⚠️');
+    expect(result!.message).toContain('80%');
+    expect(result!.newLevel).toBe(80);
+  });
+
+  // TC-B06: fires at 90% with correct message
+  it('TC-B06: fires at 90% threshold with correct message', () => {
+    const result = computeBudgetAlert(0, 90, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain('⚠️');
+    expect(result!.message).toContain('90%');
+    expect(result!.newLevel).toBe(90);
+  });
+
+  // TC-B07: fires at 100% with 🚨 emoji
+  it('TC-B07: fires at 100% threshold with 🚨 emoji', () => {
+    const result = computeBudgetAlert(0, 100, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain('🚨');
+    expect(result!.message).toContain('100%');
+    expect(result!.newLevel).toBe(100);
+  });
+
+  // TC-B08: returns null when prevLevel already equals new level (no repeat fire)
+  it('TC-B08: returns null when prevLevel already matches new threshold (no repeat)', () => {
+    expect(computeBudgetAlert(80, 80, 100)).toBeNull();
+  });
+
+  // TC-B09: advances from prevLevel 75 → 80 when cost crosses 80%
+  it('TC-B09: advances from prevLevel 75 to 80 when cost crosses 80%', () => {
+    const result = computeBudgetAlert(75, 80, 100);
+    expect(result).not.toBeNull();
+    expect(result!.newLevel).toBe(80);
+  });
+
+  // TC-B10: does NOT fire if pct exactly at previous level boundary
+  it('TC-B10: does not fire when cost is below 75% of ceiling', () => {
+    // 74% — below any threshold
+    expect(computeBudgetAlert(0, 74, 100)).toBeNull();
+  });
+
+  // TC-B11: newLevel returned correctly so caller can update prevBudgetLevel state
+  it('TC-B11: newLevel is returned correctly for each threshold', () => {
+    expect(computeBudgetAlert(0, 75, 100)!.newLevel).toBe(75);
+    expect(computeBudgetAlert(0, 80, 100)!.newLevel).toBe(80);
+    expect(computeBudgetAlert(0, 90, 100)!.newLevel).toBe(90);
+    expect(computeBudgetAlert(0, 100, 100)!.newLevel).toBe(100);
+  });
+
+  // TC-B12: message format matches '⚠️ Budget 80%: $X.XX / $Y.YY' exactly
+  it('TC-B12: message format matches expected pattern for 80% threshold', () => {
+    const result = computeBudgetAlert(0, 80, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).toBe('⚠️ Budget 80%: $80.00 / $100.00');
+  });
+
+  // Extra: non-integer cost and ceiling
+  it('TC-B13: formats fractional dollar amounts with 2 decimal places', () => {
+    const result = computeBudgetAlert(0, 7.5, 10);
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain('$7.50');
+    expect(result!.message).toContain('$10.00');
   });
 });

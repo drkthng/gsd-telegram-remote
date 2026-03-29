@@ -27,7 +27,7 @@ import { resolveConfig, injectGsdConfigResolver, isEnabled } from "./config.js";
 import { injectDeps, injectListProjects } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
-import { type GsdAutoState, EMPTY_STATE, computeNotifications } from "./notifier.js";
+import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
 
 let loop: PollLoop | null = null;
 
@@ -129,6 +129,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
   // Also refreshes cachedActiveDetail so /status can report the current unit.
 
   let prevState: GsdAutoState = EMPTY_STATE;
+  let prevBudgetLevel = 0;
 
   pi.on('agent_end', async () => {
     if (!loop) return;
@@ -160,6 +161,26 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       prevState = curr;
       for (const msg of msgs) {
         await loop.notify(msg);
+      }
+
+      // Budget alert
+      const ceiling = typeof prefs?.budget_ceiling === 'number' ? prefs.budget_ceiling : undefined;
+      if (ceiling) {
+        try {
+          const metricsModule = await importExtensionModule(import.meta.url, '../gsd/metrics.js').catch(() => null) as any;
+          if (metricsModule?.getLedger && metricsModule?.getProjectTotals) {
+            const ledger = metricsModule.getLedger();
+            if (ledger) {
+              const totals = metricsModule.getProjectTotals(ledger.units);
+              const cost: number = totals.cost ?? 0;
+              const alert = computeBudgetAlert(prevBudgetLevel, cost, ceiling);
+              if (alert) {
+                prevBudgetLevel = alert.newLevel;
+                await loop.notify(alert.message);
+              }
+            }
+          }
+        } catch { /* non-fatal */ }
       }
     } catch {
       // Non-fatal — notification failures must not affect the main loop
