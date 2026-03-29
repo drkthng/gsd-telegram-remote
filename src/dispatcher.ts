@@ -19,6 +19,7 @@ import type { ProjectEntry } from "./projects.js";
 export interface GsdStatusApi {
   isAutoActive: () => boolean;
   isAutoPaused: () => boolean;
+  getActiveDetail?: () => { mid: string; sliceId: string; taskId: string; phase: string } | null;
 }
 
 type ListProjectsFn = () => Promise<ProjectEntry[]>;
@@ -77,7 +78,16 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_statusApi) {
         const active = _statusApi.isAutoActive();
         const paused = _statusApi.isAutoPaused();
-        if (active) return { reply: "🟢 Auto-mode: <b>running</b>", stateChanged: false };
+        if (active) {
+          const detail = _statusApi.getActiveDetail?.();
+          if (detail) {
+            return {
+              reply: `🟢 ${detail.mid}/${detail.sliceId}/${detail.taskId} (${detail.phase})`,
+              stateChanged: false,
+            };
+          }
+          return { reply: "🟢 Auto-mode: <b>running</b>", stateChanged: false };
+        }
         if (paused) return { reply: "🟡 Auto-mode: <b>paused</b> — send /auto to resume", stateChanged: false };
         return { reply: "⚫ Auto-mode: <b>idle</b>", stateChanged: false };
       }

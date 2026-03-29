@@ -136,6 +136,20 @@ describe("executeCommand", () => {
     expect(result.stateChanged).toBe(false);
   });
 
+  it("/status running-with-detail: reply contains mid/sliceId/taskId", async () => {
+    const statusApi = {
+      isAutoActive: () => true,
+      isAutoPaused: () => false,
+      getActiveDetail: () => ({ mid: "M003", sliceId: "S01", taskId: "T01", phase: "executing" }),
+    };
+    injectDeps(mockPi as unknown as ExtensionAPI, statusApi);
+    const result = await executeCommand({ type: "status" });
+    expect(result.reply).toContain("M003");
+    expect(result.reply).toContain("S01");
+    expect(result.reply).toContain("T01");
+    expect(result.stateChanged).toBe(false);
+  });
+
   // ── /help ────────────────────────────────────────────────────────────────
 
   it("/help: reply contains /projects, stateChanged=false", async () => {

@@ -31,10 +31,17 @@ import { type GsdAutoState, EMPTY_STATE, computeNotifications } from "./notifier
 
 let loop: PollLoop | null = null;
 
+/** Cached active detail — updated after each agent_end; read synchronously by statusApi.getActiveDetail(). */
+let cachedActiveDetail: { mid: string; sliceId: string; taskId: string; phase: string } | null = null;
+
 export default async function activate(pi: ExtensionAPI): Promise<void> {
   let prefs: Record<string, unknown> | null = null;
   let resolveRemoteConfig: (() => { token: string; channelId: string } | null) | null = null;
-  let statusApi: { isAutoActive: () => boolean; isAutoPaused: () => boolean } | null = null;
+  let statusApi: {
+    isAutoActive: () => boolean;
+    isAutoPaused: () => boolean;
+    getActiveDetail?: () => { mid: string; sliceId: string; taskId: string; phase: string } | null;
+  } | null = null;
 
   try {
     const { importExtensionModule } = await import("@gsd/pi-coding-agent");
@@ -66,6 +73,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       statusApi = {
         isAutoActive: autoModule.isAutoActive,
         isAutoPaused: autoModule.isAutoPaused,
+        // Returns the last GSD state snapshot synchronously from the module-level cache.
+        // The cache is refreshed on every agent_end event so it stays current without
+        // making this call-site async (which would require changing the dispatcher interface).
+        getActiveDetail: () => cachedActiveDetail,
       };
     }
   } catch {
@@ -115,6 +126,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
   // ── Proactive notifications via agent_end events ──────────────────────────
   // Single handler reads GSD state after each unit completes and delegates all
   // transition logic to computeNotifications() in src/notifier.ts (pure, testable).
+  // Also refreshes cachedActiveDetail so /status can report the current unit.
 
   let prevState: GsdAutoState = EMPTY_STATE;
 
@@ -124,6 +136,17 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       const { importExtensionModule } = await import('@gsd/pi-coding-agent');
       const stateModule = await importExtensionModule(import.meta.url, '../gsd/state.js').catch(() => null) as any;
       const rawState = stateModule?.deriveState ? await stateModule.deriveState(process.cwd()).catch(() => null) : null;
+
+      // Refresh cached active detail for synchronous getActiveDetail() reads
+      cachedActiveDetail = rawState
+        ? {
+            mid: rawState.activeMilestone?.id ?? "",
+            sliceId: rawState.activeSlice?.id ?? "",
+            taskId: rawState.activeTask?.id ?? "",
+            phase: rawState.phase ?? "",
+          }
+        : null;
+
       const curr: GsdAutoState = {
         phase: rawState?.phase ?? '',
         mid: rawState?.activeMilestone?.id ?? '',
