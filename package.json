@@ -5,8 +5,10 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/resolve-gsd-paths.js && tsc -p tsconfig.build.json",
     "build:watch": "tsc --watch",
+    "install-ext": "npm run build && node scripts/install-ext.js",
+    "uninstall-ext": "node scripts/install-ext.js --unlink",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "lint": "eslint src --ext .ts"
   },
