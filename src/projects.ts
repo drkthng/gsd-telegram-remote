@@ -1,10 +1,16 @@
 /**
  * projects.ts — List GSD-managed projects from ~/.gsd/projects/
  *
- * GSD maintains a registry at {gsdHome}/projects/{name}/repo-meta.json.
- * Each entry records the projectDir path where PROJECT.md lives.
- * We scan the registry, read PROJECT.md for a description, and return
- * a sorted list of { name, description } objects.
+ * GSD maintains a registry at {gsdHome}/projects/{hash}/repo-meta.json.
+ * Each repo-meta.json records a `gitRoot` field pointing to the project
+ * directory where .gsd/PROJECT.md lives.
+ *
+ * Strategy:
+ *   1. Derive human name from path.basename(gitRoot)
+ *   2. Deduplicate by gitRoot (multiple registry hashes can point to same dir)
+ *   3. Read .gsd/PROJECT.md for description, falling back to folder name
+ *      when the H1 is the template placeholder "Project"
+ *   4. Skip entries without repo-meta.json or without a gitRoot field
  */
 
 import fs from "node:fs/promises";
@@ -17,13 +23,15 @@ export interface ProjectEntry {
 }
 
 interface RepoMeta {
+  gitRoot?: string;
+  // legacy field name — kept for forward-compat in case it changes back
   projectDir?: string;
 }
 
 /**
  * Extract the first meaningful line from PROJECT.md content as a description.
  * Prefers the first H1 heading (without the `#`), falls back to the first
- * non-empty non-heading line.
+ * non-empty non-heading line. Returns empty string if nothing found.
  */
 function extractDescription(content: string): string {
   const lines = content.split("\n");
@@ -33,11 +41,9 @@ function extractDescription(content: string): string {
     if (trimmed.startsWith("# ")) {
       return trimmed.slice(2).trim();
     }
-    // First non-empty line that isn't a heading
     if (!trimmed.startsWith("#")) {
       return trimmed;
     }
-    // It's a heading but not H1 — return it stripped
     return trimmed.replace(/^#+\s*/, "");
   }
   return "";
@@ -46,8 +52,11 @@ function extractDescription(content: string): string {
 /**
  * List all GSD projects registered under {gsdHome}/projects/.
  * Returns [] on any top-level filesystem error.
- * Entries that lack repo-meta.json are silently skipped.
- * Entries whose PROJECT.md cannot be read get an empty description.
+ * Entries without repo-meta.json or without a gitRoot are silently skipped.
+ * Entries are deduplicated by gitRoot — only the most recently created entry
+ * per gitRoot is kept (createdAt field, falls back to directory mtime).
+ * Entries whose PROJECT.md cannot be read or whose H1 is the template
+ * placeholder "Project" fall back to path.basename(gitRoot) as the name.
  */
 export async function listProjects(gsdHome?: string): Promise<ProjectEntry[]> {
   const home = gsdHome ?? path.join(os.homedir(), ".gsd");
@@ -63,41 +72,64 @@ export async function listProjects(gsdHome?: string): Promise<ProjectEntry[]> {
     return [];
   }
 
-  const results: ProjectEntry[] = [];
+  // Collect all valid entries keyed by gitRoot for deduplication
+  // Map: gitRoot -> { createdAt, projectMdDir }
+  const byGitRoot = new Map<string, { createdAt: string; projectMdDir: string }>();
 
   for (const entry of entries) {
     const entryDir = path.join(projectsDir, entry);
     const metaPath = path.join(entryDir, "repo-meta.json");
 
-    // Skip entries without repo-meta.json
+    let meta: RepoMeta;
     try {
-      await fs.access(metaPath);
+      const raw = await fs.readFile(metaPath, "utf-8");
+      meta = JSON.parse(raw) as RepoMeta;
     } catch {
-      continue;
+      continue; // no repo-meta.json or invalid JSON — skip
     }
 
-    // Read PROJECT.md path from repo-meta.json, fall back to entry dir
-    let projectMdPath = path.join(entryDir, "PROJECT.md");
+    // Support both field names; gitRoot is authoritative
+    const gitRoot = meta.gitRoot ?? meta.projectDir;
+    if (!gitRoot) continue;
+
+    // Normalise path separators to forward slashes for consistent keying
+    const normRoot = gitRoot.replace(/\\/g, "/");
+
+    // Extract createdAt for deduplication preference (latest wins)
+    let createdAt = "";
     try {
-      const metaRaw = await fs.readFile(metaPath, "utf-8");
-      const meta: RepoMeta = JSON.parse(metaRaw);
-      if (meta.projectDir) {
-        projectMdPath = path.join(meta.projectDir, "PROJECT.md");
-      }
+      const raw = await fs.readFile(metaPath, "utf-8");
+      const parsed = JSON.parse(raw) as { createdAt?: string };
+      createdAt = parsed.createdAt ?? "";
     } catch {
-      // Use default path
+      // leave empty — will lose deduplication tie-break to any entry with a date
     }
 
-    // Read description from PROJECT.md — empty string on any error
+    const existing = byGitRoot.get(normRoot);
+    if (!existing || createdAt > existing.createdAt) {
+      byGitRoot.set(normRoot, { createdAt, projectMdDir: gitRoot });
+    }
+  }
+
+  const results: ProjectEntry[] = [];
+
+  for (const [normRoot, { projectMdDir }] of byGitRoot) {
+    // Human-readable name: basename of the git root directory
+    const folderName = path.basename(normRoot);
+
+    // Description from .gsd/PROJECT.md
     let description = "";
     try {
+      const projectMdPath = path.join(projectMdDir, ".gsd", "PROJECT.md");
       const content = await fs.readFile(projectMdPath, "utf-8");
-      description = extractDescription(content);
+      const extracted = extractDescription(content);
+      // If the H1 is the template placeholder, fall back to the folder name
+      description = extracted === "Project" ? folderName : extracted;
     } catch {
-      // Leave description as empty string
+      description = folderName;
     }
 
-    results.push({ name: entry, description });
+    results.push({ name: folderName, description });
   }
 
   return results.sort((a, b) => a.name.localeCompare(b.name));

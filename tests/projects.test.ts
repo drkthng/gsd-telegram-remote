@@ -17,28 +17,40 @@ async function mkTmpGsdHome(): Promise<string> {
   return dir;
 }
 
+/**
+ * Create a fake registry entry.
+ *
+ * - Registry dir: {gsdHome}/projects/{hash}/repo-meta.json  (uses `hash` param)
+ * - repo-meta.json stores `gitRoot` pointing at `gitRoot` param
+ * - PROJECT.md is written to {gitRoot}/.gsd/PROJECT.md when projectMdContent is given
+ *
+ * If `withMeta` is false, no repo-meta.json is written.
+ */
 async function makeProject(
   gsdHome: string,
-  name: string,
+  hash: string,
   opts: {
     withMeta?: boolean;
+    gitRoot?: string;       // where the project actually lives
     projectMdContent?: string;
-    externalProjectDir?: string;
+    createdAt?: string;
   } = {}
 ): Promise<void> {
-  const entryDir = path.join(gsdHome, "projects", name);
+  const entryDir = path.join(gsdHome, "projects", hash);
   await fs.mkdir(entryDir, { recursive: true });
 
-  if (opts.withMeta !== false) {
-    // Default: write repo-meta.json pointing to the entry dir itself
-    const projectDir = opts.externalProjectDir ?? entryDir;
-    await fs.writeFile(
-      path.join(entryDir, "repo-meta.json"),
-      JSON.stringify({ projectDir })
-    );
-    if (opts.projectMdContent !== undefined) {
-      await fs.writeFile(path.join(projectDir, "PROJECT.md"), opts.projectMdContent);
-    }
+  if (opts.withMeta === false) return;
+
+  const gitRoot = opts.gitRoot ?? entryDir;
+  const meta: Record<string, unknown> = { gitRoot };
+  if (opts.createdAt) meta.createdAt = opts.createdAt;
+
+  await fs.writeFile(path.join(entryDir, "repo-meta.json"), JSON.stringify(meta));
+
+  if (opts.projectMdContent !== undefined) {
+    const gsdDir = path.join(gitRoot, ".gsd");
+    await fs.mkdir(gsdDir, { recursive: true });
+    await fs.writeFile(path.join(gsdDir, "PROJECT.md"), opts.projectMdContent);
   }
 }
 
@@ -69,8 +81,11 @@ describe("listProjects", () => {
     expect(result).toEqual([]);
   });
 
-  it("returns name and description for a project with H1 heading", async () => {
-    await makeProject(tmpDir, "my-project", {
+  it("returns name (folder basename) and description for a project with H1 heading", async () => {
+    // Create an external dir that looks like a real project root
+    const projectDir = path.join(tmpDir, "workspace", "my-project");
+    await makeProject(tmpDir, "abc123", {
+      gitRoot: projectDir,
       projectMdContent: "# My Project\n\nSome details here.",
     });
 
@@ -79,7 +94,9 @@ describe("listProjects", () => {
   });
 
   it("returns name and description for a project with a non-heading first line", async () => {
-    await makeProject(tmpDir, "alpha", {
+    const projectDir = path.join(tmpDir, "workspace", "alpha");
+    await makeProject(tmpDir, "hash1", {
+      gitRoot: projectDir,
       projectMdContent: "A plain description without a heading.",
     });
 
@@ -88,56 +105,112 @@ describe("listProjects", () => {
   });
 
   it("skips an entry that has no repo-meta.json", async () => {
-    // Entry dir exists but no repo-meta.json → no withMeta
-    await makeProject(tmpDir, "no-meta", { withMeta: false });
-    await makeProject(tmpDir, "has-meta", { projectMdContent: "# Has Meta" });
+    const projectDir = path.join(tmpDir, "workspace", "has-meta");
+    await makeProject(tmpDir, "no-meta-hash", { withMeta: false });
+    await makeProject(tmpDir, "has-meta-hash", {
+      gitRoot: projectDir,
+      projectMdContent: "# Has Meta",
+    });
 
     const result = await listProjects(tmpDir);
     expect(result).toEqual([{ name: "has-meta", description: "Has Meta" }]);
   });
 
-  it("returns empty description when PROJECT.md is absent (no throw)", async () => {
-    // Write repo-meta.json but don't create PROJECT.md
-    const entryDir = path.join(tmpDir, "projects", "no-readme");
-    await fs.mkdir(entryDir, { recursive: true });
-    await fs.writeFile(
-      path.join(entryDir, "repo-meta.json"),
-      JSON.stringify({ projectDir: entryDir })
-    );
-    // No PROJECT.md written
+  it("falls back to folder name when PROJECT.md is absent", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "no-readme");
+    await makeProject(tmpDir, "hash1", { gitRoot: projectDir });
+    // No .gsd/PROJECT.md written
 
     const result = await listProjects(tmpDir);
-    expect(result).toEqual([{ name: "no-readme", description: "" }]);
+    expect(result).toEqual([{ name: "no-readme", description: "no-readme" }]);
   });
 
-  it("reads PROJECT.md from the projectDir recorded in repo-meta.json", async () => {
-    // externalProjectDir simulates a project whose files live outside the gsd projects dir
-    const externalDir = path.join(tmpDir, "workspace", "my-app");
-    await fs.mkdir(externalDir, { recursive: true });
-    await fs.writeFile(path.join(externalDir, "PROJECT.md"), "# External App\n\nDetails.");
+  it("falls back to folder name when PROJECT.md H1 is the template placeholder 'Project'", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "strategy-desk");
+    await makeProject(tmpDir, "hash1", {
+      gitRoot: projectDir,
+      projectMdContent: "# Project\n\nActual content starts here.",
+    });
 
-    await makeProject(tmpDir, "my-app", { externalProjectDir: externalDir });
+    const result = await listProjects(tmpDir);
+    expect(result).toEqual([{ name: "strategy-desk", description: "strategy-desk" }]);
+  });
+
+  it("reads .gsd/PROJECT.md from the gitRoot recorded in repo-meta.json", async () => {
+    const externalDir = path.join(tmpDir, "workspace", "my-app");
+    await makeProject(tmpDir, "some-hash", {
+      gitRoot: externalDir,
+      projectMdContent: "# External App\n\nDetails.",
+    });
 
     const result = await listProjects(tmpDir);
     expect(result).toEqual([{ name: "my-app", description: "External App" }]);
   });
 
   it("returns results sorted by name", async () => {
-    await makeProject(tmpDir, "zoo", { projectMdContent: "# Zoo" });
-    await makeProject(tmpDir, "alpha", { projectMdContent: "# Alpha" });
-    await makeProject(tmpDir, "middle", { projectMdContent: "# Middle" });
+    const ws = path.join(tmpDir, "workspace");
+    for (const name of ["zoo", "alpha", "middle"]) {
+      await makeProject(tmpDir, `hash-${name}`, {
+        gitRoot: path.join(ws, name),
+        projectMdContent: `# ${name.charAt(0).toUpperCase() + name.slice(1)}`,
+      });
+    }
 
     const result = await listProjects(tmpDir);
     expect(result.map((p) => p.name)).toEqual(["alpha", "middle", "zoo"]);
   });
 
-  it("handles malformed repo-meta.json gracefully (uses default path)", async () => {
-    const entryDir = path.join(tmpDir, "projects", "broken-meta");
+  it("deduplicates entries with the same gitRoot, keeping the most recently created", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "deduped-app");
+    // Two hash entries pointing at the same gitRoot — later createdAt wins
+    await makeProject(tmpDir, "old-hash", {
+      gitRoot: projectDir,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await makeProject(tmpDir, "new-hash", {
+      gitRoot: projectDir,
+      projectMdContent: "# Deduped App",
+      createdAt: "2026-03-01T00:00:00.000Z",
+    });
+
+    const result = await listProjects(tmpDir);
+    // Only one entry, and it has the description from the newer entry's PROJECT.md
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ name: "deduped-app", description: "Deduped App" });
+  });
+
+  it("skips entries with malformed repo-meta.json", async () => {
+    const entryDir = path.join(tmpDir, "projects", "broken-hash");
     await fs.mkdir(entryDir, { recursive: true });
     await fs.writeFile(path.join(entryDir, "repo-meta.json"), "NOT JSON {{{");
-    // No PROJECT.md → empty description
+
     const result = await listProjects(tmpDir);
-    expect(result).toEqual([{ name: "broken-meta", description: "" }]);
+    expect(result).toEqual([]);
+  });
+
+  it("skips entries whose repo-meta.json has no gitRoot field", async () => {
+    const entryDir = path.join(tmpDir, "projects", "no-root-hash");
+    await fs.mkdir(entryDir, { recursive: true });
+    await fs.writeFile(path.join(entryDir, "repo-meta.json"), JSON.stringify({ version: 1 }));
+
+    const result = await listProjects(tmpDir);
+    expect(result).toEqual([]);
+  });
+
+  it("falls back to projectDir field when gitRoot is absent (legacy compat)", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "legacy-app");
+    await fs.mkdir(path.join(projectDir, ".gsd"), { recursive: true });
+    await fs.writeFile(path.join(projectDir, ".gsd", "PROJECT.md"), "# Legacy App");
+    const entryDir = path.join(tmpDir, "projects", "legacy-hash");
+    await fs.mkdir(entryDir, { recursive: true });
+    // Write meta with old `projectDir` field, no `gitRoot`
+    await fs.writeFile(
+      path.join(entryDir, "repo-meta.json"),
+      JSON.stringify({ projectDir })
+    );
+
+    const result = await listProjects(tmpDir);
+    expect(result).toEqual([{ name: "legacy-app", description: "Legacy App" }]);
   });
 });
 
