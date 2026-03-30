@@ -48,6 +48,18 @@ let _bus: CommandBus | null = null;
 let _thisProject: string = '';
 let _findProjectDir: FindProjectDirFn | null = null;
 
+/**
+ * Set to true when /auto is dispatched to the local session.
+ * Consumed (reset to false) by index.ts after each agent_end check.
+ */
+let _localAutoDispatched = false;
+
+export function consumeLocalAutoDispatched(): boolean {
+  const val = _localAutoDispatched;
+  _localAutoDispatched = false;
+  return val;
+}
+
 export function injectDeps(pi: ExtensionAPI | null, statusApi: GsdStatusApi | null): void {
   _pi = pi;
   _statusApi = statusApi;
@@ -200,6 +212,7 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
         return await _bus.send(project, cmd);
       }
       _pi.sendUserMessage("/gsd auto");
+      _localAutoDispatched = true;
       return { reply: `▶️ Sent <code>/gsd auto</code> → <b>${project}</b> — check terminal for progress.`, stateChanged: true };
     }
 

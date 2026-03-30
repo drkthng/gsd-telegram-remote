@@ -27,7 +27,7 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { importExtensionModule } from "@gsd/pi-coding-agent";
 import { resolveConfig, isEnabled } from "./config.js";
-import { injectDeps, injectListProjects, injectBus, executeCommand } from "./dispatcher.js";
+import { injectDeps, injectListProjects, injectBus, executeCommand, consumeLocalAutoDispatched } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
 import { CommandBus } from "./command-bus.js";
@@ -207,6 +207,12 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       prevState = curr;
       for (const msg of msgs) {
         await loop.notify(msg);
+      }
+
+      // Nothing-to-run notification: /auto was dispatched locally but auto-mode
+      // never became active (phase stayed complete — no pending milestones).
+      if (consumeLocalAutoDispatched() && !curr.isActive && !curr.isPaused && curr.phase === 'complete') {
+        await loop.notify(`[${projectName}] ℹ️ <b>/gsd auto</b> — no pending milestones. Queue a new one with /gsd queue.`);
       }
 
       // Budget alert
