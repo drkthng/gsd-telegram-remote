@@ -2,7 +2,7 @@
 
 Remote control your GSD auto-mode from Telegram. Start, stop, pause, and monitor auto-mode execution with instant push notifications on task/slice/milestone completion.
 
-**Status**: M001–M004 complete — rich M/S/T path notifications, budget alerts, live transport validated.
+**Status**: M001–M004 complete — rich `[project] M/S/T` path notifications, budget alerts, live transport validated. 99 tests, 7 suites.
 
 ## Why This Exists
 
@@ -10,484 +10,168 @@ GSD auto-mode enables hands-off milestone execution, but you can't easily contro
 
 - **Remote control**: Start/stop/pause auto-mode from Telegram without SSH or terminal access
 - **Visibility**: Check which milestone/slice/task is currently running
-- **Proactive updates**: Get pinged when work completes, without polling
+- **Proactive updates**: Get pinged when work completes, without polling — every notification prefixed with `[project-name]` for multi-project clarity
+- **Budget alerts**: Warnings at 75%/80%/90%/100% of configured budget ceiling
 - **Multi-project**: Manage multiple GSD projects from one Telegram chat
 
 Designed for developers who want to kick off a long build/test/migration and check back later without opening a terminal.
 
 ## Installation
 
-### 1. Clone into GSD extensions directory
+### 1. Clone and build
 
 ```bash
-git clone https://github.com/drkthng/gsd-telegram-remote.git ~/.gsd/agent/extensions/gsd-telegram-remote
-```
-
-### 2. Install dependencies
-
-```bash
-cd ~/.gsd/agent/extensions/gsd-telegram-remote
-npm install --legacy-peer-deps  # Required: @gsd/pi-coding-agent is a peerDep not on npm
-npm run build
+cd D:\AiProjects  # or wherever you keep projects
+git clone https://github.com/drkthng/gsd-telegram-remote.git
+cd gsd-telegram-remote
+npm install --legacy-peer-deps
+npm run install-ext   # builds + copies to ~/.pi/agent/extensions/
 ```
 
 The `--legacy-peer-deps` flag is necessary because `@gsd/pi-coding-agent` is a GSD-injected peerDependency not published to the npm registry.
 
-### 3. Configure your Telegram bot
+### 2. Configure your Telegram bot
 
 If you haven't already set up `remote-questions`, create a Telegram bot first:
 
 1. Chat with [@BotFather](https://t.me/botfather) on Telegram
 2. Send `/newbot`, choose a name and handle
-3. Save the token (format: `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+3. Save the token via `/gsd remote telegram` in GSD (stores it in GSD's auth.json)
 
-### 4. Set allowed user IDs
+### 3. Set allowed user IDs
 
-Edit or create `~/.gsd/agent/preferences.md`:
+Add to `~/.gsd/preferences.md` (inside the YAML frontmatter):
 
 ```yaml
 telegram_remote:
-  allowed_user_ids: [123456789, 987654321]  # Your Telegram user ID(s)
-  # Leave blank to disable the extension safely
+  enabled: true
+  allowed_user_ids: [123456789]  # Your Telegram user ID(s)
 ```
 
-To find your Telegram user ID:
-1. Chat with [@userinfobot](https://t.me/userinfobot)
-2. It will reply with your numeric ID
+To find your Telegram user ID: chat with [@userinfobot](https://t.me/userinfobot).
 
-### 5. Ensure TELEGRAM_BOT_TOKEN is set
-
-The extension reuses the existing `TELEGRAM_BOT_TOKEN` environment variable from `remote-questions`:
-
-```bash
-export TELEGRAM_BOT_TOKEN="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-```
-
-Alternatively, set it in your shell profile or GSD config.
-
-### 6. Restart GSD
+### 4. Restart GSD
 
 ```bash
 gsd
 ```
 
-The extension loads automatically on startup. Watch the console for `[telegram-remote] poll loop started` message.
+Watch for:
+```
+[gsd-telegram-remote] activating for project: my-project, chatId: 123456789, allowedUsers: 123456789
+[gsd-telegram-remote] Telegram remote control active.
+```
 
 ## Usage
 
-Send commands to your Telegram bot from any chat:
+Send commands to your Telegram bot:
 
-### `/auto [project]` — Start auto-mode
+| Command | Action |
+|---------|--------|
+| `/auto` | Start or resume auto-mode |
+| `/stop` | Stop auto-mode gracefully |
+| `/pause` | Pause auto-mode (resumable with `/auto`) |
+| `/status` | Show current milestone/slice/task and phase |
+| `/projects` | List all GSD projects |
+| `/help` | Show available commands |
 
-```
-→ /auto
-← 🟢 Auto-mode started on gsd-telegram-remote
-← Processing: M001/S01/T01...
+## Notifications
 
-→ /auto some-other-project
-← 🟢 Auto-mode started on some-other-project
-```
-
-If you have multiple GSD projects, specify the project name (folder basename from `~/.gsd/projects/`).
-
-### `/stop [project]` — Stop auto-mode gracefully
+Every auto-mode event sends a notification prefixed with the project name:
 
 ```
-→ /stop
-← ⏹ Auto-mode stopped. Last unit: M001/S01/T02
+[gsd-telegram-remote] ✅ Task M001/S01/T01 complete
+[gsd-telegram-remote] 🔷 Slice M001/S01 complete
+[gsd-telegram-remote] 🏁 Milestone M001 complete!
+[gsd-telegram-remote] ⏸️ Auto-mode paused — send /auto to resume.
+[gsd-telegram-remote] ⏹️ Auto-mode stopped.
+[gsd-telegram-remote] 🚫 Blocked: missing API key
+[gsd-telegram-remote] ⚠️ Budget 80%: $4.00 / $5.00
 ```
 
-Waits for the current task to finish, then stops. To force-kill, use your terminal.
+### Budget Alerts
 
-### `/pause [project]` — Pause auto-mode (resumable)
+Configure a ceiling in `~/.gsd/preferences.md`:
 
-```
-→ /pause
-← ⏸ Auto-mode paused at M001/S01/T03. Resume with /auto
-```
-
-Resuming with `/auto` continues from where it paused without re-running completed units.
-
-### `/status [project]` — Check current state
-
-```
-→ /status
-← 🟡 M001/S02/T04 executing... (2m 15s elapsed)
+```yaml
+budget_ceiling: 5.00   # USD
 ```
 
-Or if idle:
+Alerts fire at 75%, 80%, 90%, and 100% — each threshold once per session. Uses `⚠️` for warnings, `🚨` for 100%.
 
-```
-→ /status
-← ⚪ Auto-mode idle
-```
+### User Interaction via Telegram
 
-### `/projects` — List all GSD projects
-
-```
-→ /projects
-← Available projects:
-  • gsd-telegram-remote — Control auto-mode from Telegram
-  • my-app — Production data processing pipeline
-  • research-agent — Experiment runner with auto-mode
-```
-
-Shows folder basename (the actual project identifier) and one-line description from each project's `PROJECT.md`.
-
-### `/help` — Show command reference
-
-```
-→ /help
-← Available commands:
-  /auto [project]        Start auto-mode
-  /stop [project]        Stop gracefully
-  /pause [project]       Pause (resumable)
-  /status [project]      Check current task
-  /projects              List GSD projects
-  /help                  Show this message
-```
+When the agent calls `ask_user_questions` during auto-mode (e.g., UAT acceptance, ambiguous task choices), the question is automatically routed to your Telegram chat via GSD's `remote-questions` extension. You answer in Telegram, and the agent continues. Our poll loop pauses during this to avoid message conflicts.
 
 ## How It Works
 
-### Architecture Overview
-
 ```
-Telegram Bot
-    ↓
-[Poll Loop] ← getUpdates (long-poll, 30s timeout)
-    ↓
-[Command Parser] → /auto, /stop, /pause, /status, /projects
-    ↓
-[Dispatcher] → GSD auto-mode control + file system queries
-    ↓
-[Responder] → Format result, send Telegram reply
-    ↓
-[Proactive Notifier] ← Hooks: agent_end events → read STATE.md → send update
+Telegram Bot API
+    ↓ getUpdates (30s long-poll)
+[Poll Loop] → [Auth] → [Dispatcher] → pi.sendUserMessage("/gsd auto")
+                                      → sendReply(status/help/projects)
+
+[agent_end hook] → deriveState() → computeNotifications(prev, curr) → loop.notify()
+                                  → computeBudgetAlert(prevLevel, cost, ceiling) → loop.notify()
 ```
 
 ### Core Modules
 
-| Module | Purpose | GSD-free? |
-|--------|---------|-----------|
-| `src/auth.ts` | Validate Telegram user ID against allowlist | ✅ Yes |
-| `src/config.ts` | Load preferences + env vars | ✅ Yes |
-| `src/notifier.ts` | Poll STATE.md and send proactive notifications | ✅ Yes |
-| `src/poller.ts` | Long-poll Telegram getUpdates | ✅ Yes |
-| `src/dispatcher.ts` | Parse commands + execute actions | ✅ Yes (injectable) |
-| `src/responder.ts` | Format + send Telegram messages | ✅ Yes |
-| `src/projects.ts` | Scan ~/.gsd/projects, read PROJECT.md | ✅ Yes |
-| `src/index.ts` | GSD extension factory, hooks | ❌ No (GSD-only) |
+| Module | Purpose |
+|--------|---------|
+| `src/index.ts` | Extension entry point — `activate()`, event hooks, notification dispatch |
+| `src/config.ts` | Config from preferences.md + AuthStorage + env vars |
+| `src/dispatcher.ts` | Command parsing and routing (all 6 commands) |
+| `src/notifier.ts` | Pure state-transition notification logic — `computeNotifications()`, `computeBudgetAlert()` |
+| `src/poller.ts` | Telegram long-poll loop with pause/resume/notify |
+| `src/projects.ts` | Scan ~/.gsd/projects/ for project listing |
+| `src/auth.ts` | User ID allowlist validation |
+| `src/responder.ts` | Telegram sendMessage wrapper |
 
-All pure modules are tested independently and can run without GSD installed. The `index.ts` entry point is the only part that depends on GSD's ExtensionAPI.
+### Key Design Decisions
 
-### State Detection
-
-The extension polls GSD's `.gsd/STATE.md` file to detect:
-
-- Milestone/slice/task transitions
-- Auto-mode start/stop/pause events
-- Errors and blockers
-
-No database queries; no tight coupling to GSD internals. STATE.md is the source of truth.
-
-### Poll Pause During Questions
-
-When GSD is asking a user a question via `ask_user_questions`, our poller temporarily pauses to avoid advancing the Telegram `lastUpdateId` past the question-answer message. This prevents message loss and ensures question replies are directed to the correct handler.
-
-## Configuration
-
-### Full preferences.md Example
-
-```yaml
-telegram_remote:
-  # Comma-separated or array of Telegram user IDs allowed to control auto-mode
-  allowed_user_ids: [123456789, 987654321]
-
-  # Optional: override which Telegram bot token to use (defaults to TELEGRAM_BOT_TOKEN env var)
-  bot_token_env_var: TELEGRAM_BOT_TOKEN
-
-  # Optional: customize message formatting (emoji, text style)
-  # Currently uses hardcoded defaults; future enhancement
-```
-
-### Environment Variables
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot API token (required) | None — must be set |
-| `GSD_HOME` | Alternate GSD home directory | `~/.gsd` |
-| `POLL_TIMEOUT_SECONDS` | Long-poll timeout | `30` |
-| `POLL_INTERVAL_MS` | Retry delay on error | `5000` (5s) |
-
-### Budget Alerts
-
-The extension sends proactive budget warnings when token/cost usage crosses stepped thresholds. Configure the ceiling in `~/.gsd/agent/preferences.md`:
-
-```yaml
-telegram_remote:
-  budget_ceiling: 5.00   # USD — alert when cost crosses 75%, 80%, 90%, 100% of ceiling
-```
-
-Alert thresholds:
-- **75%** — ⚠️ Budget 75%: $X.XX / $5.00
-- **80%** — ⚠️ Budget 80%: $X.XX / $5.00
-- **90%** — ⚠️ Budget 90%: $X.XX / $5.00
-- **100%** — 🚨 Budget 100%: $X.XX / $5.00 (ceiling reached)
-
-Each threshold fires at most once per auto-mode session. Set `budget_ceiling: 0` or omit the key to disable budget alerts entirely.
-
-## Workflow: Start to Finish
-
-### Scenario: Kick off a 30-minute milestone
-
-1. **From Telegram**:
-   ```
-   /auto my-research-project
-   ```
-
-2. **Extension**:
-   - Validates your user ID is in allowlist ✅
-   - Calls GSD's `/gsd auto my-research-project` (same-process)
-   - Auto-mode starts, executes M001
-
-3. **You walk away** with your phone or laptop
-
-4. **Extension monitors** `.gsd/STATE.md` for transitions:
-   ```
-   T01 complete ✅
-   → Sends: "✅ Task M001/S01/T01 complete"
-
-   S01 complete 🔷
-   → Sends: "🔷 Slice M001/S01 complete"
-
-   M001 complete 🏁
-   → Sends: "🏁 Milestone M001 complete!"
-   ```
-
-5. **You get notified in real-time** without checking the terminal
-
-6. **To pause mid-way**:
-   ```
-   /pause my-research-project
-   ```
-   Extension sends signal; auto-mode pauses after current task.
-
-7. **Later, resume**:
-   ```
-   /auto my-research-project
-   ```
-   Auto-mode continues from where it paused.
+- **No cross-extension imports**: Config reads preferences.md directly and hydrates `TELEGRAM_BOT_TOKEN` from GSD's AuthStorage. The `remote-questions` module is TypeScript-only and unreachable from compiled extensions via `importExtensionModule`.
+- **`importExtensionModule` specifiers use `.ts`**: GSD extensions are source `.ts` files loaded by jiti, not compiled `.js`. The path from `dist/index.js` is `../../gsd/*.ts`.
+- **`telegram_remote` prefs parsed from raw YAML**: GSD's preferences validator strips unknown keys. Our extension reads its own config block directly from the preferences.md frontmatter.
+- **Pure notification logic**: `computeNotifications()` and `computeBudgetAlert()` are side-effect-free functions tested without mocking GSD runtime.
 
 ## Testing
 
-### Unit Tests
+```bash
+npm test          # 99 tests, 7 suites
+npm run build     # TypeScript compile check
+npm run install-ext  # Build + install to ~/.pi/agent/extensions/
+```
+
+### Test Projects
+
+Two lightweight test projects for rapid end-to-end validation:
 
 ```bash
-npm test
+# Project 1 — notifications show as [gsd-test-telegram]
+cd D:\AiProjects\gsd-test-telegram
+gsd    # then /gsd auto
+
+# Project 2 — notifications show as [gsd-test-telegram-2]
+cd D:\AiProjects\gsd-test-telegram-2
+gsd    # then /gsd auto
 ```
 
-Runs 79 tests across 6 suites covering:
-- Telegram user ID validation
-- Command parsing (case-insensitive, whitespace-tolerant)
-- Dispatcher command routing
-- Poll loop lifecycle and dispatch integration
-- listProjects() with real filesystem fixtures
-- Responder message formatting
-- Proactive notifier (STATE.md polling, task/slice/milestone events)
+Each has M004 with 2 slices × 3 tasks. S01 tests notification flow (trivial tasks). S02 tests remote interaction (T02 asks the user a question via Telegram).
 
-All tests are pure-module (no GSD, no network calls).
+## Requirements
 
-### Manual Testing with Test Project
+- Node.js 20+
+- GSD with `remote-questions` Telegram bot configured
+- `telegram_remote.allowed_user_ids` set in preferences.md
 
-A lightweight test project is provided for rapid end-to-end verification:
+## Milestone History
 
-```bash
-cd D:/AiProjects/gsd-test-telegram
-gsd auto
-# Watch Telegram for notifications as 27 trivial tasks complete in ~30 seconds
-```
-
-The test project has 3 milestones × 3 slices × 3 tasks = 27 simple write-one-file tasks, each completing in seconds. Use it to verify the full notification pipeline without a real project.
-
-### Integration Testing
-
-After M003 (proactive notifications), run:
-
-1. Start auto-mode in a real project
-2. Watch Telegram for task/slice/milestone notifications
-3. Send `/status` — verify it shows correct active unit
-4. Send `/stop` — verify auto-mode stops cleanly
-5. Send `/pause` then `/auto` — verify it resumes from paused point
-
-## Limitations & Future Work
-
-### M001–M004 Complete
-- ✅ `/auto`, `/stop`, `/pause` commands
-- ✅ `/status` (basic: idle/running/paused)
-- ✅ `/help` and `/projects` commands
-- ✅ All core modules tested independently
-- ✅ Proactive push notifications on task/slice/milestone completion
-- ✅ STATE.md polling with configurable interval
-- ✅ Full integration test project at `D:/AiProjects/gsd-test-telegram`
-- ✅ Rich M/S/T path format in notifications (e.g. `M001/S01/T01`)
-- ✅ Budget alerts at 75%/80%/90%/100% of configured ceiling
-- ✅ Live transport validated — 4/4 Telegram messages delivered in smoke test
-
-### Future
-- Rich `/status` showing remaining tasks and ETA
-- Cross-process control (different terminal session)
-- Project aliases (`/auto strategy` instead of folder name)
-- Dashboard web UI (intentionally deferred)
-- Webhook-based updates instead of polling (out of scope — added complexity, breaks NAT/firewall cases)
-
-## Troubleshooting
-
-### "No such user: 123456789"
-
-**Problem**: User ID not in `allowed_user_ids` or improperly formatted.
-
-**Solution**:
-1. Get your ID from [@userinfobot](https://t.me/userinfobot)
-2. Add it to `~/.gsd/agent/preferences.md` as a number (no quotes)
-3. Restart GSD
-
-### "TELEGRAM_BOT_TOKEN not set"
-
-**Problem**: Environment variable not exported.
-
-**Solution**:
-```bash
-export TELEGRAM_BOT_TOKEN="your_token_here"
-gsd  # Now restart GSD
-```
-
-Or add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) for persistence.
-
-### "Poll loop failed: timeout waiting for updates"
-
-**Problem**: Normal after idle periods (30s Telegram timeout).
-
-**Solution**: Extension auto-retries. If it happens frequently, check your bot token and network connection.
-
-### Extension doesn't load
-
-**Problem**: Check logs.
-
-**Solution**:
-```bash
-gsd /gsd logs --grep "telegram-remote"
-```
-
-Look for:
-- ✅ `[telegram-remote] extension loaded` — extension started
-- ✅ `poll loop started` — poller initialized
-- ❌ `Error: Cannot find module` — missing dependencies
-- ❌ `GSD internals unavailable` — running outside GSD (expected; extension disables gracefully)
-
-## Development
-
-### Project Structure
-
-```
-gsd-telegram-remote/
-├── src/
-│   ├── auth.ts           — Telegram user ID validation
-│   ├── config.ts         — Load preferences + env vars
-│   ├── notifier.ts        — Proactive push notifications (STATE.md polling)
-│   ├── poller.ts         — Long-poll Telegram updates
-│   ├── dispatcher.ts      — Command parsing + routing
-│   ├── responder.ts       — Format + send messages
-│   ├── projects.ts        — List GSD projects
-│   ├── types.ts           — Shared TypeScript types
-│   └── index.ts           — GSD extension entry point
-├── tests/
-│   ├── auth.test.ts
-│   ├── dispatcher.test.ts
-│   ├── notifier.test.ts
-│   ├── poller.test.ts
-│   ├── poller-dispatch.test.ts
-│   ├── projects.test.ts
-│   └── __mocks__/@gsd/pi-coding-agent.ts
-├── jest.config.js         — Jest + ts-jest ESM config
-├── package.json
-├── tsconfig.json
-├── .gsd/
-│   ├── PROJECT.md
-│   ├── REQUIREMENTS.md
-│   ├── DECISIONS.md
-│   ├── KNOWLEDGE.md
-│   ├── milestones/M001/ROADMAP.md
-│   └── milestones/M001/slices/S01-S04/
-└── README.md
-```
-
-### Build & Distribution
-
-```bash
-# Development (ts-node, no build)
-node --loader ts-node/esm src/index.ts
-
-# Production (compile to dist/)
-npm run build
-
-# The extension loads from ~/.gsd/agent/extensions/gsd-telegram-remote/
-# GSD uses jiti to JIT the .ts files directly; no build step required
-```
-
-### Adding a New Command
-
-1. Update `src/types.ts` — add to `RemoteCommand` union:
-   ```typescript
-   | { type: "restart"; project?: string }
-   ```
-
-2. Update `src/dispatcher.ts`:
-   - Add case in `parseCommand()`: `clean === '/restart'`
-   - Add case in `executeCommand()` with implementation
-   - Register injectable if needed: `injectRestartHandler(fn)`
-
-3. Write tests in `tests/dispatcher.test.ts`
-
-4. Update `/help` message in dispatcher
-
-5. Run `npm test` to verify
-
-### Running Tests Locally
-
-```bash
-# All tests
-npm test
-
-# Watch mode
-npm test -- --watch
-
-# Specific test file
-npm test -- projects.test.ts
-
-# With coverage
-npm test -- --coverage
-```
-
-## Contributing
-
-Contributions welcome. Start by:
-
-1. Fork this repo
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Write tests first (TDD)
-4. Update README if behavior changes
-5. Submit PR
+- [x] **M001**: Same-process command control — 6 commands, notifications, poll loop
+- [x] **M002**: Build pipeline — `npm run install-ext` produces loadable `dist/index.js`
+- [x] **M003**: Rich `/status` — returns `🟢 M001/S02/T01 (executing)` with milestone/slice/task detail
+- [x] **M004**: Rich notifications + budget alerts — `[project] M/S/T` path format, threshold alerts at 75/80/90/100%
 
 ## License
 
-MIT — See LICENSE file
-
-## Support & Community
-
-- **Issues**: [GitHub Issues](https://github.com/drkthng/gsd-telegram-remote/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/drkthng/gsd-telegram-remote/discussions)
-- **GSD Community**: [GSD Docs](https://gsd-build.github.io)
-
----
-
-**Built with ❤️ for makers who want their builds to work in the background.**
+MIT
