@@ -15,7 +15,7 @@ export const ALIAS_FILE = join(homedir(), ".gsd", "telegram-remote-aliases.json"
 /** alias → project name */
 export type AliasStore = Record<string, string>;
 
-const ALIAS_RE = /^[a-z0-9]{2,3}$/;
+const ALIAS_RE = /^[a-z0-9]{2,4}$/;
 
 // ── I/O ──────────────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ export function setAlias(
 ): { ok: true } | { ok: false; error: string } {
   const a = alias.toLowerCase();
   if (!ALIAS_RE.test(a)) {
-    return { ok: false, error: `Alias must be 2-3 lowercase alphanumeric characters (got "${alias}").` };
+    return { ok: false, error: `Alias must be 2-4 lowercase alphanumeric characters (got "${alias}").` };
   }
   if (!project.trim()) {
     return { ok: false, error: "Project name cannot be empty." };
