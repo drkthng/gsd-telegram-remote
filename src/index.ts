@@ -55,9 +55,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   if (prefsModule?.loadEffectiveGSDPreferences) {
     prefs = prefsModule.loadEffectiveGSDPreferences()?.preferences ?? null;
-    console.log(`[gsd-telegram-remote] prefs loaded: ${prefs ? Object.keys(prefs).join(',') : 'null'}`);
-  } else {
-    console.warn(`[gsd-telegram-remote] prefs module missing loadEffectiveGSDPreferences. keys: ${prefsModule ? Object.keys(prefsModule).join(',') : 'null'}`);
   }
 
   const autoModule = await importExtensionModule(
@@ -89,7 +86,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   // Derive project name from the working directory (folder basename)
   const projectName = path.basename(process.cwd());
-  console.log(`[gsd-telegram-remote] activating for project: ${projectName}, chatId: ${config.chatId}, allowedUsers: ${config.allowedUserIds.join(',')}`);
 
   loop = new PollLoop({
     botToken: config.botToken,
@@ -136,8 +132,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         console.error('[gsd-telegram-remote] agent_end: deriveState threw:', e);
         return null;
       });
-      console.log(`[gsd-telegram-remote] agent_end: phase=${rawState?.phase} mid=${rawState?.activeMilestone?.id} sid=${rawState?.activeSlice?.id} tid=${rawState?.activeTask?.id}`);
-
       // Refresh cached active detail for synchronous getActiveDetail() reads
       cachedActiveDetail = rawState
         ? {
@@ -158,10 +152,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         isPaused: statusApi?.isAutoPaused() ?? false,
       };
       const msgs = computeNotifications(prevState, curr, projectName);
-      console.log(`[gsd-telegram-remote] agent_end: prev=${prevState.mid}/${prevState.sliceId}/${prevState.taskId} curr=${curr.mid}/${curr.sliceId}/${curr.taskId} msgs=${msgs.length}`);
       prevState = curr;
       for (const msg of msgs) {
-        console.log(`[gsd-telegram-remote] sending: ${msg}`);
         await loop.notify(msg);
       }
 
