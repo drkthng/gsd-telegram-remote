@@ -102,6 +102,16 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     },
   });
 
+  // Acquire poll lock before registering the tool so isPollOwner is known.
+  bus.startListening(async (cmd) => executeCommand(cmd));
+  const ownsPolling = acquirePollLock();
+  if (ownsPolling) {
+    loop.start();
+    console.log(`[gsd-telegram-remote] Telegram remote control active (polling).`);
+  } else {
+    console.log(`[gsd-telegram-remote] Notifications only — another session owns command polling.`);
+  }
+
   // ── ask_user_questions override: full round-trip via Telegram ────────────
   // Registers a tool that overrides the built-in ask_user_questions. When the
   // agent calls it, we send the question to Telegram, poll for the user's
@@ -128,7 +138,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       const questions = params.questions as AskUserQuestion[];
 
       try {
-        const result = await askUserViaTelegram(loop!, config, questions, signal ?? undefined);
+        const result = await askUserViaTelegram(loop!, config, questions, ownsPolling, signal ?? undefined);
 
         if (result.cancelled) {
           return {
@@ -246,15 +256,4 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     loop = null;
     releasePollLock();
   });
-
-  // Only the lock owner runs the command poll loop.
-  // Other sessions still have loop.notify() for proactive notifications.
-  bus.startListening(async (cmd) => executeCommand(cmd));
-  const ownsPolling = acquirePollLock();
-  if (ownsPolling) {
-    loop.start();
-    console.log(`[gsd-telegram-remote] Telegram remote control active (polling).`);
-  } else {
-    console.log(`[gsd-telegram-remote] Notifications only — another session owns command polling.`);
-  }
 }

@@ -19,6 +19,7 @@
 import type { TelegramUpdate } from "./types.js";
 import type { PollLoop } from "./poller.js";
 import { isAllowedUser } from "./auth.js";
+import { registerPending, clearPending, waitForBusAnswer } from "./answer-bus.js";
 
 const DEFAULT_ANSWER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -195,13 +196,16 @@ let _idCounter = 0;
 /**
  * Send ask_user_questions to Telegram and wait for the answer.
  *
- * Uses loop.registerAnswerHandler() so all updates go through the single
- * main PollLoop — no second getUpdates call, no offset races.
+ * Master session (isPollOwner=true): registers handler directly on the loop.
+ * Non-master session (isPollOwner=false): registers a .pending file in the
+ * answer bus; the master loop routes the callback/text to a .answer file;
+ * this function polls that file.
  */
 export async function askUserViaTelegram(
   loop: PollLoop,
   config: BridgeConfig,
   questions: AskUserQuestion[],
+  isPollOwner: boolean,
   signal?: AbortSignal,
 ): Promise<AskUserResult> {
   if (questions.length === 0) return { cancelled: true };
@@ -214,7 +218,35 @@ export async function askUserViaTelegram(
   const messageId = await loop.sendMessage(payload);
   if (messageId === null) return { cancelled: true };
 
-  // Wait for answer via the main loop's handler
+  // ── Non-master path: answer bus ───────────────────────────────────────────
+  if (!isPollOwner) {
+    registerPending({ pid: process.pid, promptId, chatId: config.chatId, messageId });
+
+    const busAnswer = await waitForBusAnswer(process.pid, promptId, timeout, signal);
+
+    if (!busAnswer) {
+      await loop.sendMessage({ text: `⏰ No response after ${Math.round(timeout / 60_000)} min. Defaulting to first option.`, parse_mode: "HTML" });
+      return { cancelled: true };
+    }
+
+    await loop.clearInlineKeyboard(messageId);
+    await loop.sendMessage({ text: `✅ Got it.`, parse_mode: "HTML" });
+
+    if (busAnswer.callbackData) {
+      const result = parseCallbackAnswer(busAnswer.callbackData, questions, promptId);
+      if (result) return result;
+      // "nota" — treat as free-text with empty (shouldn't normally happen via bus)
+      return { cancelled: true };
+    }
+
+    if (busAnswer.text) {
+      return parseTextAnswer(busAnswer.text, questions);
+    }
+
+    return { cancelled: true };
+  }
+
+  // ── Master path: direct loop handler ─────────────────────────────────────
   return new Promise<AskUserResult>((resolve) => {
     let waitingForText = false;
     const deadline = setTimeout(async () => {

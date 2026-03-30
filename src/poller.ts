@@ -18,6 +18,7 @@ import type { TelegramUpdate, TelegramCallbackQuery, TelegramApiResponse } from 
 import { isAllowedUser, getSenderId } from "./auth.js";
 import { parseCommand, executeCommand } from "./dispatcher.js";
 import { sendReply } from "./responder.js";
+import { routeToAnswerBus } from "./answer-bus.js";
 
 const POLL_TIMEOUT_SECONDS = 30;
 const ERROR_BACKOFF_MS = 5_000;
@@ -175,6 +176,9 @@ export class PollLoop {
     // Offer every update to the answer handler first.
     // If it returns true, the update is consumed — skip command dispatch.
     if (this.answerHandler?.(update)) return;
+
+    // Route to answer bus for non-master sessions with pending questions.
+    if (await routeToAnswerBus(update, this.opts.botToken)) return;
 
     // Normal command dispatch — text messages only.
     const msg = update.message;
