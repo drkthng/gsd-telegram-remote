@@ -23,6 +23,7 @@
  */
 
 import path from "node:path";
+import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { importExtensionModule } from "@gsd/pi-coding-agent";
 import { resolveConfig, isEnabled } from "./config.js";
@@ -32,6 +33,7 @@ import { PollLoop } from "./poller.js";
 import { CommandBus } from "./command-bus.js";
 import { acquirePollLock, releasePollLock } from "./poll-lock.js";
 import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
+import { askUserViaTelegram, type AskUserQuestion } from "./ask-user-bridge.js";
 
 let loop: PollLoop | null = null;
 
@@ -110,8 +112,65 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     console.log(`[gsd-telegram-remote] Notifications only — another session owns command polling.`);
   }
 
-  // NOTE: ask_user_questions is handled by GSD's built-in remote-questions
-  // extension (remote-questions/manager.js → TelegramAdapter). No override needed.
+  // ── ask_user_questions override: full round-trip via Telegram ────────────
+  // Registers a tool that overrides the built-in ask_user_questions. When the
+  // agent calls it, we send the question to Telegram, poll for the user's
+  // answer, and return it. The main command poll loop is paused during this
+  // to avoid getUpdates offset conflicts.
+
+  pi.registerTool({
+    name: "ask_user_questions",
+    label: "Ask User (Telegram)",
+    description: "Ask the user questions via Telegram with inline keyboard buttons. Returns the user's answers.",
+    parameters: Type.Object({
+      questions: Type.Array(Type.Object({
+        id: Type.String(),
+        header: Type.Optional(Type.String()),
+        question: Type.String(),
+        options: Type.Optional(Type.Array(Type.Object({
+          label: Type.String(),
+          description: Type.Optional(Type.String()),
+        }))),
+        allowMultiple: Type.Optional(Type.Boolean()),
+      })),
+    }) as any,
+    async execute(_toolCallId: string, params: any, signal: any): Promise<any> {
+      const questions = params.questions as AskUserQuestion[];
+
+      try {
+        const bridgeConfig = { chatId: config.chatId, allowedUserIds: config.allowedUserIds, projectName };
+        const result = await askUserViaTelegram(loop!, bridgeConfig, questions, ownsPolling, signal ?? undefined);
+
+        if (result.cancelled) {
+          return {
+            content: [{ type: "text" as const, text: "The user did not respond in time. The question was cancelled." }],
+            details: { cancelled: true },
+          };
+        }
+
+        // Format the response for the agent
+        const answerLines: string[] = [];
+        if (result.response?.answers) {
+          for (const [qId, answer] of Object.entries(result.response.answers)) {
+            const selected = Array.isArray(answer.selected) ? answer.selected.join(", ") : answer.selected;
+            answerLines.push(`${qId}: ${selected}${answer.notes ? ` (notes: ${answer.notes})` : ""}`);
+          }
+        }
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: answerLines.length > 0
+              ? `User answered via Telegram:\n${answerLines.join("\n")}`
+              : "User answered via Telegram but provided no selections.",
+          }],
+          details: { response: result.response },
+        };
+      } finally {
+        // no-op: no pause/resume needed — single loop handles everything
+      }
+    },
+  });
 
   // ── Proactive notifications via agent_end events ──────────────────────────
   // Single handler reads GSD state after each unit completes and delegates all
@@ -155,12 +214,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         isActive: statusApi?.isAutoActive() ?? false,
         isPaused: statusApi?.isAutoPaused() ?? false,
       };
-
-      // DEBUG: log state transitions to stderr for troubleshooting
-      console.error(`[gsd-telegram-remote] agent_end: prev=${JSON.stringify({p:prevState.phase,m:prevState.mid,s:prevState.sliceId,t:prevState.taskId,a:prevState.isActive})} curr=${JSON.stringify({p:curr.phase,m:curr.mid,s:curr.sliceId,t:curr.taskId,a:curr.isActive})}`);
-
       const msgs = computeNotifications(prevState, curr, projectName);
-      console.error(`[gsd-telegram-remote] agent_end: notifications=${JSON.stringify(msgs)}`);
       prevState = curr;
       for (const msg of msgs) {
         await loop.notify(msg);
