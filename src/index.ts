@@ -26,9 +26,10 @@ import path from "node:path";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { importExtensionModule } from "@gsd/pi-coding-agent";
 import { resolveConfig, isEnabled } from "./config.js";
-import { injectDeps, injectListProjects } from "./dispatcher.js";
+import { injectDeps, injectListProjects, injectBus, executeCommand } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
+import { CommandBus } from "./command-bus.js";
 import { acquirePollLock, releasePollLock } from "./poll-lock.js";
 import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
 
@@ -86,6 +87,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   // Derive project name from the working directory (folder basename)
   const projectName = path.basename(process.cwd());
+
+  const bus = new CommandBus({ projectName });
+  injectBus(bus, projectName);
 
   loop = new PollLoop({
     botToken: config.botToken,
@@ -183,6 +187,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   // Shutdown: stop poll loop and release lock
   pi.on("session_shutdown", () => {
+    bus.stopListening();
     loop?.stop();
     loop = null;
     releasePollLock();
@@ -190,6 +195,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   // Only the lock owner runs the command poll loop.
   // Other sessions still have loop.notify() for proactive notifications.
+  bus.startListening(async (cmd) => executeCommand(cmd));
   const ownsPolling = acquirePollLock();
   if (ownsPolling) {
     loop.start();

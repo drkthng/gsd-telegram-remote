@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { listProjects } from "../src/projects.js";
+import { listProjects, findProjectDir } from "../src/projects.js";
 import { parseCommand } from "../src/dispatcher.js";
 
 // ---------------------------------------------------------------------------
@@ -229,5 +229,47 @@ describe("parseCommand /projects", () => {
 
   it("parses /PROJECTS case-insensitively", () => {
     expect(parseCommand("/PROJECTS")).toEqual({ type: "projects" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findProjectDir
+// ---------------------------------------------------------------------------
+
+describe("findProjectDir", () => {
+  it("returns null for a non-existent gsdHome", async () => {
+    const result = await findProjectDir("any-project", path.join(tmpDir, "no-such-dir"));
+    expect(result).toBeNull();
+  });
+
+  it("returns null when no project matches the given name", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "alpha");
+    await makeProject(tmpDir, "hash1", { gitRoot: projectDir });
+    const result = await findProjectDir("beta", tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it("returns the gitRoot when the basename matches", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "my-project");
+    await makeProject(tmpDir, "hash1", { gitRoot: projectDir });
+    const result = await findProjectDir("my-project", tmpDir);
+    expect(result).toBe(projectDir);
+  });
+
+  it("returns null for entries with no gitRoot field", async () => {
+    const entryDir = path.join(tmpDir, "projects", "no-root");
+    await fs.mkdir(entryDir, { recursive: true });
+    await fs.writeFile(path.join(entryDir, "repo-meta.json"), JSON.stringify({ version: 1 }));
+    const result = await findProjectDir("no-root", tmpDir);
+    expect(result).toBeNull();
+  });
+
+  it("supports the legacy projectDir field", async () => {
+    const projectDir = path.join(tmpDir, "workspace", "legacy-proj");
+    const entryDir = path.join(tmpDir, "projects", "legacy-hash");
+    await fs.mkdir(entryDir, { recursive: true });
+    await fs.writeFile(path.join(entryDir, "repo-meta.json"), JSON.stringify({ projectDir }));
+    const result = await findProjectDir("legacy-proj", tmpDir);
+    expect(result).toBe(projectDir);
   });
 });

@@ -134,3 +134,43 @@ export async function listProjects(gsdHome?: string): Promise<ProjectEntry[]> {
 
   return results.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+/**
+ * Find the gitRoot directory for a project by its folder name.
+ *
+ * Scans {gsdHome}/projects/<hash>/repo-meta.json and returns the first entry
+ * where path.basename(gitRoot) === name.  Returns null when not found or
+ * when the registry directory doesn't exist.
+ */
+export async function findProjectDir(name: string, gsdHome?: string): Promise<string | null> {
+  const home = gsdHome ?? path.join(os.homedir(), ".gsd");
+  const projectsDir = path.join(home, "projects");
+
+  let entries: string[];
+  try {
+    const dirents = await fs.readdir(projectsDir, { withFileTypes: true });
+    entries = dirents.filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    const metaPath = path.join(projectsDir, entry, "repo-meta.json");
+    let meta: RepoMeta;
+    try {
+      const raw = await fs.readFile(metaPath, "utf-8");
+      meta = JSON.parse(raw) as RepoMeta;
+    } catch {
+      continue;
+    }
+
+    const gitRoot = meta.gitRoot ?? meta.projectDir;
+    if (!gitRoot) continue;
+
+    if (path.basename(gitRoot) === name) {
+      return gitRoot;
+    }
+  }
+
+  return null;
+}
