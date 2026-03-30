@@ -39,12 +39,15 @@ export interface RemoteConfig {
 
 /** Commands the dispatcher understands. */
 export type RemoteCommand =
-  | { type: "auto" }
-  | { type: "stop" }
-  | { type: "pause" }
-  | { type: "status" }
+  | { type: "auto"; target?: string }
+  | { type: "stop"; target?: string }
+  | { type: "pause"; target?: string }
+  | { type: "status"; target?: string }
   | { type: "help" }
   | { type: "projects" }
+  | { type: "alias_set"; alias: string; project: string }
+  | { type: "alias_list" }
+  | { type: "alias_del"; alias: string }
   | { type: "unknown"; raw: string };
 
 /** What the dispatcher returns after executing a command. */

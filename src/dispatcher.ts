@@ -10,11 +10,23 @@
  *
  * Status queries read GSD state functions directly (isAutoActive, isAutoPaused)
  * since those are pure reads with no session dependency.
+ *
+ * Command syntax (M005+):
+ *   /auto <project|alias>   — start auto-mode in target project
+ *   /stop <project|alias>   — stop auto-mode in target project
+ *   /pause <project|alias>  — pause auto-mode in target project
+ *   /status [project|alias] — show state (optional target; defaults to this session)
+ *   /alias set <alias> <project>
+ *   /alias list
+ *   /alias del <alias>
+ *   /projects               — list registered GSD projects
+ *   /help                   — command reference
  */
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import type { RemoteCommand, DispatchResult } from "./types.js";
 import type { ProjectEntry } from "./projects.js";
+import { loadAliases, setAlias, deleteAlias, listAliases } from "./aliases.js";
 
 export interface GsdStatusApi {
   isAutoActive: () => boolean;
@@ -37,20 +49,75 @@ export function injectListProjects(fn: ListProjectsFn | null): void {
   _listProjects = fn;
 }
 
+// ── parseCommand ─────────────────────────────────────────────────────────────
+
 /** Parse the raw message text into a typed command. */
 export function parseCommand(text: string): RemoteCommand {
-  const clean = text.trim().toLowerCase();
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
 
-  if (clean === "/auto" || clean === "/gsd auto" || clean === "auto") return { type: "auto" };
-  if (clean === "/stop" || clean === "/gsd stop" || clean === "stop") return { type: "stop" };
-  if (clean === "/pause" || clean === "/gsd pause" || clean === "pause") return { type: "pause" };
-  if (clean === "/status" || clean === "/gsd status" || clean === "status") return { type: "status" };
-  if (clean === "/help" || clean === "help") return { type: "help" };
+  // Split into tokens for multi-word commands
+  const tokens = trimmed.split(/\s+/);
+  const cmd = tokens[0]?.toLowerCase() ?? "";
+  const rest = tokens.slice(1);
 
-  if (clean === "/projects" || clean === "projects") return { type: "projects" };
+  // /gsd <sub> forms — treat as the sub-command with rest as target tokens
+  if (cmd === "/gsd") {
+    const sub = rest[0]?.toLowerCase();
+    const target = rest[1] || undefined;
+    if (sub === "auto")  return { type: "auto",  target };
+    if (sub === "stop")  return { type: "stop",  target };
+    if (sub === "pause") return { type: "pause", target };
+    if (sub === "status") return { type: "status", target };
+    return { type: "unknown", raw: trimmed };
+  }
 
-  return { type: "unknown", raw: text };
+  // /alias set <alias> <project> | /alias list | /alias del <alias>
+  if (cmd === "/alias") {
+    const sub = rest[0]?.toLowerCase();
+    if (sub === "set") {
+      const alias = rest[1];
+      const project = rest.slice(2).join(" ");
+      if (alias && project) return { type: "alias_set", alias, project };
+      return { type: "unknown", raw: trimmed };
+    }
+    if (sub === "list") return { type: "alias_list" };
+    if (sub === "del" || sub === "delete" || sub === "rm") {
+      const alias = rest[1];
+      if (alias) return { type: "alias_del", alias };
+      return { type: "unknown", raw: trimmed };
+    }
+    return { type: "unknown", raw: trimmed };
+  }
+
+  // Action commands with optional target
+  const target = rest[0] || undefined;
+
+  if (cmd === "/auto" || lower === "auto")
+    return { type: "auto", target };
+
+  if (cmd === "/stop" || lower === "stop")
+    return { type: "stop", target };
+
+  if (cmd === "/pause" || lower === "pause")
+    return { type: "pause", target };
+
+  if (cmd === "/status" || lower === "status")
+    return { type: "status", target };
+
+  if (lower === "/help" || lower === "help") return { type: "help" };
+  if (lower === "/projects" || lower === "projects") return { type: "projects" };
+
+  return { type: "unknown", raw: trimmed };
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const USAGE_AUTO  = "⚠️ Specify a project:\n<code>/auto &lt;project|alias&gt;</code>\n\nSee /alias list for shortcuts or /projects for names.";
+const USAGE_STOP  = "⚠️ Specify a project:\n<code>/stop &lt;project|alias&gt;</code>\n\nSee /alias list for shortcuts or /projects for names.";
+const USAGE_PAUSE = "⚠️ Specify a project:\n<code>/pause &lt;project|alias&gt;</code>\n\nSee /alias list for shortcuts or /projects for names.";
+
+// ── executeCommand ────────────────────────────────────────────────────────────
 
 /** Execute a parsed command. Returns a reply string for Telegram. */
 export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult> {
@@ -60,18 +127,24 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
 
   switch (cmd.type) {
     case "auto": {
+      if (!cmd.target) return { reply: USAGE_AUTO, stateChanged: false };
+      const project = resolveTarget(cmd.target);
       _pi.sendUserMessage("/gsd auto");
-      return { reply: "▶️ Sent <code>/gsd auto</code> — check terminal for progress.", stateChanged: true };
+      return { reply: `▶️ Sent <code>/gsd auto</code> → <b>${project}</b> — check terminal for progress.`, stateChanged: true };
     }
 
     case "stop": {
+      if (!cmd.target) return { reply: USAGE_STOP, stateChanged: false };
+      const project = resolveTarget(cmd.target);
       _pi.sendUserMessage("/gsd stop");
-      return { reply: "⏹️ Sent <code>/gsd stop</code>.", stateChanged: true };
+      return { reply: `⏹️ Sent <code>/gsd stop</code> → <b>${project}</b>.`, stateChanged: true };
     }
 
     case "pause": {
+      if (!cmd.target) return { reply: USAGE_PAUSE, stateChanged: false };
+      const project = resolveTarget(cmd.target);
       _pi.sendUserMessage("/gsd pause");
-      return { reply: "⏸️ Sent <code>/gsd pause</code>. Send /auto to resume.", stateChanged: true };
+      return { reply: `⏸️ Sent <code>/gsd pause</code> → <b>${project}</b>. Send /auto ${cmd.target} to resume.`, stateChanged: true };
     }
 
     case "status": {
@@ -91,7 +164,6 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
         if (paused) return { reply: "🟡 Auto-mode: <b>paused</b> — send /auto to resume", stateChanged: false };
         return { reply: "⚫ Auto-mode: <b>idle</b>", stateChanged: false };
       }
-      // Status API not available — fall back to triggering the GSD status command
       _pi.sendUserMessage("/gsd auto status");
       return { reply: "ℹ️ Status requested — check terminal.", stateChanged: false };
     }
@@ -101,12 +173,18 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
         reply: [
           "<b>GSD Remote Commands</b>",
           "",
-          "/auto — Start or resume auto-mode",
-          "/stop — Stop auto-mode",
-          "/pause — Pause auto-mode",
-          "/status — Show current state",
-          "/help — This message",
+          "/auto &lt;project|alias&gt; — Start or resume auto-mode",
+          "/stop &lt;project|alias&gt; — Stop auto-mode",
+          "/pause &lt;project|alias&gt; — Pause auto-mode",
+          "/status [project|alias] — Show current state",
           "/projects — List GSD projects",
+          "",
+          "<b>Aliases</b>",
+          "/alias set &lt;alias&gt; &lt;project&gt; — Create 2-3 char shortcut",
+          "/alias list — Show all aliases",
+          "/alias del &lt;alias&gt; — Remove alias",
+          "",
+          "/help — This message",
         ].join("\n"),
         stateChanged: false,
       };
@@ -114,12 +192,22 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
     case "projects": {
       if (_listProjects) {
         const projects = await _listProjects();
+        const store = loadAliases();
+        const aliasMap: Record<string, string[]> = {};
+        for (const { alias, project } of listAliases(store)) {
+          if (!aliasMap[project]) aliasMap[project] = [];
+          aliasMap[project].push(alias);
+        }
         if (projects.length === 0) {
           return { reply: "📂 No projects found.", stateChanged: false };
         }
-        const lines = projects.map((p) =>
-          p.description ? `• <b>${p.name}</b> — ${p.description}` : `• <b>${p.name}</b>`
-        );
+        const lines = projects.map((p) => {
+          const aliases = aliasMap[p.name]?.map((a) => `<code>${a}</code>`).join(" ") ?? "";
+          const aliasStr = aliases ? ` [${aliases}]` : "";
+          return p.description && p.description !== p.name
+            ? `• <b>${p.name}</b>${aliasStr} — ${p.description}`
+            : `• <b>${p.name}</b>${aliasStr}`;
+        });
         return {
           reply: ["<b>GSD Projects</b>", "", ...lines].join("\n"),
           stateChanged: false,
@@ -128,10 +216,43 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       return { reply: "⚠️ Projects listing not available.", stateChanged: false };
     }
 
+    case "alias_set": {
+      const result = setAlias(cmd.alias, cmd.project);
+      if (result.ok) {
+        return { reply: `✅ Alias <code>${cmd.alias.toLowerCase()}</code> → <b>${cmd.project}</b> set.`, stateChanged: false };
+      }
+      return { reply: `⚠️ ${result.error}`, stateChanged: false };
+    }
+
+    case "alias_list": {
+      const store = loadAliases();
+      const entries = listAliases(store);
+      if (entries.length === 0) {
+        return { reply: "📋 No aliases set. Use /alias set &lt;alias&gt; &lt;project&gt;.", stateChanged: false };
+      }
+      const lines = entries.map(({ alias, project }) => `<code>${alias}</code> → <b>${project}</b>`);
+      return { reply: ["<b>Aliases</b>", "", ...lines].join("\n"), stateChanged: false };
+    }
+
+    case "alias_del": {
+      const deleted = deleteAlias(cmd.alias);
+      if (deleted) {
+        return { reply: `🗑️ Alias <code>${cmd.alias.toLowerCase()}</code> removed.`, stateChanged: false };
+      }
+      return { reply: `⚠️ Alias <code>${cmd.alias.toLowerCase()}</code> not found.`, stateChanged: false };
+    }
+
     case "unknown":
       return {
         reply: `❓ Unknown command: <code>${cmd.raw.slice(0, 50)}</code>\n\nSend /help for available commands.`,
         stateChanged: false,
       };
   }
+}
+
+/** Resolve alias → project name for display in replies. Pure passthrough if not an alias. */
+function resolveTarget(input: string): string {
+  const store = loadAliases();
+  const lower = input.toLowerCase();
+  return store[lower] ?? input;
 }
