@@ -138,7 +138,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       const questions = params.questions as AskUserQuestion[];
 
       try {
-        const result = await askUserViaTelegram(loop!, config, questions, ownsPolling, signal ?? undefined);
+        const bridgeConfig = { chatId: config.chatId, allowedUserIds: config.allowedUserIds, projectName };
+        const result = await askUserViaTelegram(loop!, bridgeConfig, questions, ownsPolling, signal ?? undefined);
 
         if (result.cancelled) {
           return {

@@ -22,7 +22,8 @@ describe("formatQuestionMessage", () => {
       ],
     }];
 
-    const result = formatQuestionMessage(questions, "p1");
+    const result = formatQuestionMessage(questions, "p1", "my-project");
+    expect(result.text).toContain("[my-project]");
     expect(result.text).toContain("Deploy Target");
     expect(result.text).toContain("Where to deploy?");
     expect(result.reply_markup).toBeDefined();

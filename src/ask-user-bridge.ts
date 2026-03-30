@@ -44,6 +44,7 @@ export interface BridgeConfig {
   chatId: string;
   allowedUserIds: number[];
   timeoutMs?: number;
+  projectName?: string;
 }
 
 // ── HTML escaping ────────────────────────────────────────────────────────────
@@ -60,14 +61,16 @@ function escapeHtml(text: string): string {
 export function formatQuestionMessage(
   questions: AskUserQuestion[],
   promptId: string,
+  projectName?: string,
 ): { text: string; parse_mode: string; reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } } {
   const isSingle = questions.length === 1;
   const q = questions[0];
+  const tag = projectName ? `[${projectName}] ` : "";
 
   if (isSingle && q.options && q.options.length > 0 && !q.allowMultiple) {
     // Single-select → inline keyboard
     const lines = [
-      `<b>🤔 GSD needs your input</b>`,
+      `<b>${tag}🤔 GSD needs your input</b>`,
       ``,
       `<b>${escapeHtml(q.header ?? q.id)}</b>`,
       escapeHtml(q.question),
@@ -85,7 +88,7 @@ export function formatQuestionMessage(
   if (isSingle && q.options && q.options.length > 0 && q.allowMultiple) {
     // Multi-select → numbered list, comma-separated reply
     const lines = [
-      `<b>🤔 GSD needs your input</b>`,
+      `<b>${tag}🤔 GSD needs your input</b>`,
       ``,
       `<b>${escapeHtml(q.header ?? q.id)}</b>`,
       escapeHtml(q.question),
@@ -101,7 +104,7 @@ export function formatQuestionMessage(
   }
 
   // Multi-question or no options → text format
-  const lines = [`<b>🤔 GSD needs your input</b>`, ``];
+  const lines = [`<b>${tag}🤔 GSD needs your input</b>`, ``];
   questions.forEach((question, qIdx) => {
     const prefix = questions.length > 1 ? `(${qIdx + 1}/${questions.length}) ` : "";
     lines.push(`<b>${prefix}${escapeHtml(question.header ?? question.id)}</b>`);
@@ -214,7 +217,7 @@ export async function askUserViaTelegram(
   const timeout = config.timeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS;
 
   // Send the question
-  const payload = formatQuestionMessage(questions, promptId);
+  const payload = formatQuestionMessage(questions, promptId, config.projectName);
   const messageId = await loop.sendMessage(payload);
   if (messageId === null) return { cancelled: true };
 

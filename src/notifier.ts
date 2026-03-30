@@ -49,6 +49,11 @@ export function computeNotifications(
   const msgs: string[] = [];
   const prefix = projectName ? `[${projectName}] ` : '';
 
+  // Auto started (first time we see isActive after it was off)
+  if (curr.isActive && !prev.isActive) {
+    msgs.push(`${prefix}▶️ Auto-mode started — <b>${curr.mid}/${curr.sliceId}/${curr.taskId}</b>`);
+  }
+
   // Task complete
   if (prev.taskId && curr.taskId !== prev.taskId && curr.mid === prev.mid) {
     msgs.push(`${prefix}✅ Task <b>${prev.mid}/${prev.sliceId}/${prev.taskId}</b> complete`);
@@ -59,8 +64,10 @@ export function computeNotifications(
     msgs.push(`${prefix}🔷 Slice <b>${prev.mid}/${prev.sliceId}</b> complete`);
   }
 
-  // Milestone complete
+  // Milestone complete — curr.mid changes OR all milestones done (phase=complete, prev had a mid)
   if (prev.mid && curr.mid !== prev.mid) {
+    msgs.push(`${prefix}🏁 Milestone <b>${prev.mid}</b> complete!`);
+  } else if (prev.mid && curr.phase === 'complete' && prev.phase !== 'complete') {
     msgs.push(`${prefix}🏁 Milestone <b>${prev.mid}</b> complete!`);
   }
 
