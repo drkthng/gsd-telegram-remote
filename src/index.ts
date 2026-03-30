@@ -29,6 +29,7 @@ import { resolveConfig, isEnabled } from "./config.js";
 import { injectDeps, injectListProjects } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
+import { acquirePollLock, releasePollLock } from "./poll-lock.js";
 import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
 
 let loop: PollLoop | null = null;
@@ -188,12 +189,20 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     }
   });
 
-  // Shutdown: stop poll loop cleanly
+  // Shutdown: stop poll loop and release lock
   pi.on("session_shutdown", () => {
     loop?.stop();
     loop = null;
+    releasePollLock();
   });
 
-  loop.start();
-  console.log("[gsd-telegram-remote] Telegram remote control active.");
+  // Only the lock owner runs the command poll loop.
+  // Other sessions still have loop.notify() for proactive notifications.
+  const ownsPolling = acquirePollLock();
+  if (ownsPolling) {
+    loop.start();
+    console.log(`[gsd-telegram-remote] Telegram remote control active (polling).`);
+  } else {
+    console.log(`[gsd-telegram-remote] Notifications only — another session owns command polling.`);
+  }
 }
