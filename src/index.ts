@@ -13,16 +13,17 @@
  *       - Auto-mode paused    → "[project] ⏸️ Auto-mode paused"
  *       - Auto-mode stopped   → "[project] ⏹️ Auto-mode stopped"
  *       - Auto-mode blocked   → "[project] 🚫 Blocked: <reason>"
+ *  3. Overrides ask_user_questions for full round-trip via Telegram:
+ *       - Sends questions with inline keyboard buttons to Telegram
+ *       - Polls for callback_query (button press) or text reply
+ *       - Returns the answer to the agent as if the user answered locally
  *
- * NOTE: GSD's built-in sendRemoteNotification() exists but is never called from
- * auto-mode. The only Telegram messages the user currently receives are
- * ask_user_questions prompts. This extension adds everything else.
- *
- * Conflict guard: the poll loop is paused while ask_user_questions is in flight
- * to prevent our getUpdates offset advancing past a question-answer reply.
+ * Conflict guard: the main poll loop is paused while the ask-user bridge is
+ * polling for an answer, to prevent offset conflicts on getUpdates.
  */
 
 import path from "node:path";
+import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { importExtensionModule } from "@gsd/pi-coding-agent";
 import { resolveConfig, isEnabled } from "./config.js";
@@ -32,6 +33,7 @@ import { PollLoop } from "./poller.js";
 import { CommandBus } from "./command-bus.js";
 import { acquirePollLock, releasePollLock } from "./poll-lock.js";
 import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
+import { askUserViaTelegram, type AskUserQuestion } from "./ask-user-bridge.js";
 
 let loop: PollLoop | null = null;
 
@@ -100,17 +102,65 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  // ── Conflict guard: pause poll loop while ask_user_questions is in flight ──
-  pi.on("tool_execution_start", (event) => {
-    if (event.toolName === "ask_user_questions") {
-      loop?.pause();
-    }
-  });
+  // ── ask_user_questions override: full round-trip via Telegram ────────────
+  // Registers a tool that overrides the built-in ask_user_questions. When the
+  // agent calls it, we send the question to Telegram, poll for the user's
+  // answer, and return it. The main command poll loop is paused during this
+  // to avoid getUpdates offset conflicts.
 
-  pi.on("tool_execution_end", (event) => {
-    if (event.toolName === "ask_user_questions") {
-      loop?.resume();
-    }
+  pi.registerTool({
+    name: "ask_user_questions",
+    label: "Ask User (Telegram)",
+    description: "Ask the user questions via Telegram with inline keyboard buttons. Returns the user's answers.",
+    parameters: Type.Object({
+      questions: Type.Array(Type.Object({
+        id: Type.String(),
+        header: Type.Optional(Type.String()),
+        question: Type.String(),
+        options: Type.Optional(Type.Array(Type.Object({
+          label: Type.String(),
+          description: Type.Optional(Type.String()),
+        }))),
+        allowMultiple: Type.Optional(Type.Boolean()),
+      })),
+    }) as any,
+    async execute(_toolCallId: string, params: any, signal: any): Promise<any> {
+      const questions = params.questions as AskUserQuestion[];
+
+      // Pause command poll loop to avoid offset conflicts
+      loop?.pause();
+      try {
+        const result = await askUserViaTelegram(config, questions, signal ?? undefined);
+
+        if (result.cancelled) {
+          return {
+            content: [{ type: "text" as const, text: "The user did not respond in time. The question was cancelled." }],
+            details: { cancelled: true },
+          };
+        }
+
+        // Format the response for the agent
+        const answerLines: string[] = [];
+        if (result.response?.answers) {
+          for (const [qId, answer] of Object.entries(result.response.answers)) {
+            const selected = Array.isArray(answer.selected) ? answer.selected.join(", ") : answer.selected;
+            answerLines.push(`${qId}: ${selected}${answer.notes ? ` (notes: ${answer.notes})` : ""}`);
+          }
+        }
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: answerLines.length > 0
+              ? `User answered via Telegram:\n${answerLines.join("\n")}`
+              : "User answered via Telegram but provided no selections.",
+          }],
+          details: { response: result.response },
+        };
+      } finally {
+        loop?.resume();
+      }
+    },
   });
 
   // ── Proactive notifications via agent_end events ──────────────────────────

@@ -86,9 +86,14 @@ describe("setAlias", () => {
     expect(result).toMatchObject({ ok: false });
   });
 
-  it("rejects alias longer than 3 chars", () => {
-    const result = setAlias("abcd", "my-project", tmpFile);
+  it("rejects alias longer than 4 chars", () => {
+    const result = setAlias("abcde", "my-project", tmpFile);
     expect(result).toMatchObject({ ok: false });
+  });
+
+  it("accepts 4-char alias", () => {
+    const result = setAlias("abcd", "my-project", tmpFile);
+    expect(result).toMatchObject({ ok: true });
   });
 
   it("rejects alias with special characters", () => {

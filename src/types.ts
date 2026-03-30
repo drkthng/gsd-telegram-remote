@@ -5,7 +5,7 @@
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
-  callback_query?: unknown;
+  callback_query?: TelegramCallbackQuery;
 }
 
 export interface TelegramMessage {
@@ -22,6 +22,13 @@ export interface TelegramUser {
   is_bot: boolean;
   first_name: string;
   username?: string;
+}
+
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: { message_id: number; chat: { id: number } };
+  data?: string;
 }
 
 export interface TelegramApiResponse<T> {
