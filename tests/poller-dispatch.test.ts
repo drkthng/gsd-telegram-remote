@@ -204,10 +204,11 @@ describe("PollLoop dispatch integration", () => {
     expect(sendMessageCalls).toHaveLength(0);
   }, 5000);
 
-  // ── Test 3: Loop paused — dispatch skipped ───────────────────────────────────
+  // ── Test 3: Answer handler consumes updates before dispatch ─────────────────
 
-  it("skips dispatch while the loop is paused", async () => {
+  it("answer handler consumes matching updates and blocks command dispatch", async () => {
     let getUpdatesCallCount = 0;
+    const handledUpdates: number[] = [];
 
     fetchSpy.mockImplementation(async (input) => {
       const url = String(input);
@@ -229,18 +230,25 @@ describe("PollLoop dispatch integration", () => {
       allowedUserIds: [ALLOWED_USER],
     });
 
-    // Pause BEFORE starting — updates are received but dispatch is skipped
-    loop.pause();
+    // Register an answer handler that consumes ALL updates
+    loop.registerAnswerHandler((update) => {
+      handledUpdates.push(update.update_id);
+      return true; // consume — prevent command dispatch
+    });
+
     loop.start();
 
-    // Wait long enough for the first getUpdates cycle to complete
     await new Promise<void>((r) => setTimeout(r, 300));
     loop.stop();
 
-    // sendMessage should never have been called
+    // Handler should have seen the update
+    expect(handledUpdates).toContain(300);
+
+    // sendMessage (command reply) should NOT have been called
     const sendMessageCalls = fetchSpy.mock.calls.filter((call) =>
       String(call[0]).includes("sendMessage"),
     );
     expect(sendMessageCalls).toHaveLength(0);
   }, 5000);
+
 });

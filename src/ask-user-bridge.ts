@@ -3,27 +3,27 @@
  *
  * Sends the question(s) to Telegram as a formatted message with inline keyboard
  * buttons (for single-question prompts) or numbered options (for multi-question).
- * Polls for the user's answer via callback_query (button press) or text reply.
- * Returns the structured answer that pi expects from ask_user_questions.
  *
- * Design decisions:
- * - Single question with options → inline keyboard (one button per option + "None of the above")
- * - Multi-question or free-form → numbered text, user replies with numbers or free text
- * - Timeout after 5 minutes (configurable) — returns cancelled result
- * - Uses a separate short-poll loop (not the main command poller) to avoid conflicts
+ * Answer routing goes through the main PollLoop via registerAnswerHandler().
+ * There is NO separate getUpdates loop here — that was the original bug.
+ * One loop, one offset, no races.
+ *
+ * Design:
+ * - Single-select with options → inline keyboard + "None of the above"
+ * - Multi-select → numbered text list, comma-separated reply
+ * - Multi-question → numbered sections, semicolon/newline reply
+ * - 5-minute timeout → cancelled result
+ * - Commands (/stop etc.) always dispatched even while question is pending
  */
 
-import type { TelegramApiResponse } from "./types.js";
+import type { TelegramUpdate } from "./types.js";
+import type { PollLoop } from "./poller.js";
 import { isAllowedUser } from "./auth.js";
 
-const TELEGRAM_API = "https://api.telegram.org";
-const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_ANSWER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const ANSWER_POLL_INTERVAL_MS = 2_000;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** Shape of a question from ask_user_questions args */
 export interface AskUserQuestion {
   id: string;
   header?: string;
@@ -32,7 +32,6 @@ export interface AskUserQuestion {
   allowMultiple?: boolean;
 }
 
-/** The structured answer pi expects */
 export interface AskUserResult {
   response?: {
     answers: Record<string, { selected: string | string[]; notes?: string }>;
@@ -40,36 +39,7 @@ export interface AskUserResult {
   cancelled?: boolean;
 }
 
-/** Telegram inline keyboard button */
-interface InlineKeyboardButton {
-  text: string;
-  callback_data: string;
-}
-
-/** Telegram callback query from button press */
-interface TelegramCallbackQuery {
-  id: string;
-  from: { id: number; is_bot: boolean; first_name: string };
-  message?: { message_id: number; chat: { id: number } };
-  data?: string;
-}
-
-/** Telegram update with callback_query support */
-interface FullTelegramUpdate {
-  update_id: number;
-  message?: {
-    message_id: number;
-    from?: { id: number; is_bot: boolean; first_name: string };
-    chat: { id: number; type: string };
-    reply_to_message?: { message_id: number };
-    text?: string;
-    date: number;
-  };
-  callback_query?: TelegramCallbackQuery;
-}
-
-interface BridgeConfig {
-  botToken: string;
+export interface BridgeConfig {
   chatId: string;
   allowedUserIds: number[];
   timeoutMs?: number;
@@ -86,67 +56,55 @@ function escapeHtml(text: string): string {
 
 // ── Format question for Telegram ─────────────────────────────────────────────
 
-function formatQuestionMessage(
+export function formatQuestionMessage(
   questions: AskUserQuestion[],
   promptId: string,
-): { text: string; reply_markup?: { inline_keyboard: InlineKeyboardButton[][] } } {
+): { text: string; parse_mode: string; reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } } {
   const isSingle = questions.length === 1;
   const q = questions[0];
 
   if (isSingle && q.options && q.options.length > 0 && !q.allowMultiple) {
-    // Single-select with options → inline keyboard
-    const lines: string[] = [
+    // Single-select → inline keyboard
+    const lines = [
       `<b>🤔 GSD needs your input</b>`,
       ``,
       `<b>${escapeHtml(q.header ?? q.id)}</b>`,
       escapeHtml(q.question),
     ];
 
-    const keyboard: InlineKeyboardButton[][] = q.options.map((opt, idx) => [{
+    const keyboard = q.options.map((opt, idx) => [{
       text: `${idx + 1}. ${opt.label}`,
       callback_data: `auq:${promptId}:${idx}`,
     }]);
+    keyboard.push([{ text: "✏️ Other (reply with text)", callback_data: `auq:${promptId}:nota` }]);
 
-    // "None of the above" as free-text option
-    keyboard.push([{
-      text: "✏️ None of the above (reply with text)",
-      callback_data: `auq:${promptId}:nota`,
-    }]);
-
-    return {
-      text: lines.join("\n"),
-      reply_markup: { inline_keyboard: keyboard },
-    };
+    return { text: lines.join("\n"), parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } };
   }
 
   if (isSingle && q.options && q.options.length > 0 && q.allowMultiple) {
-    // Multi-select → show numbered list, user replies with comma-separated numbers
-    const lines: string[] = [
+    // Multi-select → numbered list, comma-separated reply
+    const lines = [
       `<b>🤔 GSD needs your input</b>`,
       ``,
       `<b>${escapeHtml(q.header ?? q.id)}</b>`,
       escapeHtml(q.question),
       ``,
+      ...q.options.map((opt, idx) => {
+        const desc = opt.description ? ` — ${escapeHtml(opt.description)}` : "";
+        return `${idx + 1}. ${escapeHtml(opt.label)}${desc}`;
+      }),
+      ``,
+      `<i>Reply with comma-separated numbers (e.g. "1,3") or type your own answer.</i>`,
     ];
-    q.options.forEach((opt, idx) => {
-      const desc = opt.description ? ` — ${escapeHtml(opt.description)}` : "";
-      lines.push(`${idx + 1}. ${escapeHtml(opt.label)}${desc}`);
-    });
-    lines.push(``, `<i>Reply with numbers separated by commas (e.g. "1,3") or type your own answer.</i>`);
-    return { text: lines.join("\n") };
+    return { text: lines.join("\n"), parse_mode: "HTML" };
   }
 
-  // Multi-question or no-options → text format
-  const lines: string[] = [
-    `<b>🤔 GSD needs your input</b>`,
-    ``,
-  ];
-
+  // Multi-question or no options → text format
+  const lines = [`<b>🤔 GSD needs your input</b>`, ``];
   questions.forEach((question, qIdx) => {
     const prefix = questions.length > 1 ? `(${qIdx + 1}/${questions.length}) ` : "";
     lines.push(`<b>${prefix}${escapeHtml(question.header ?? question.id)}</b>`);
     lines.push(escapeHtml(question.question));
-
     if (question.options && question.options.length > 0) {
       lines.push(``);
       question.options.forEach((opt, idx) => {
@@ -156,51 +114,36 @@ function formatQuestionMessage(
     }
     lines.push(``);
   });
-
   if (questions.length > 1) {
-    lines.push(`<i>Reply with one answer per line, or use semicolons: "1;2;custom text"</i>`);
+    lines.push(`<i>Reply with one answer per line or semicolons: "1;2"</i>`);
   } else {
-    lines.push(`<i>Reply with a number to select an option, or type your own answer.</i>`);
+    lines.push(`<i>Reply with a number to select, or type your own answer.</i>`);
   }
 
-  return { text: lines.join("\n") };
+  return { text: lines.join("\n"), parse_mode: "HTML" };
 }
 
-// ── Parse user's answer ──────────────────────────────────────────────────────
+// ── Parse answers ─────────────────────────────────────────────────────────────
 
-function parseCallbackAnswer(
+export function parseCallbackAnswer(
   callbackData: string,
   questions: AskUserQuestion[],
   promptId: string,
 ): AskUserResult | null {
-  // Format: "auq:<promptId>:<optionIndex>" or "auq:<promptId>:nota"
   const prefix = `auq:${promptId}:`;
   if (!callbackData.startsWith(prefix)) return null;
 
   const payload = callbackData.slice(prefix.length);
-
-  if (payload === "nota") {
-    // User clicked "None of the above" — they need to send a text reply
-    return null; // signal: wait for text
-  }
+  if (payload === "nota") return null; // signal: wait for text
 
   const idx = parseInt(payload, 10);
   const q = questions[0];
   if (!q?.options || isNaN(idx) || idx < 0 || idx >= q.options.length) return null;
 
-  return {
-    response: {
-      answers: {
-        [q.id]: { selected: q.options[idx].label },
-      },
-    },
-  };
+  return { response: { answers: { [q.id]: { selected: q.options[idx].label } } } };
 }
 
-function parseTextAnswer(
-  text: string,
-  questions: AskUserQuestion[],
-): AskUserResult {
+export function parseTextAnswer(text: string, questions: AskUserQuestion[]): AskUserResult {
   const answers: Record<string, { selected: string | string[]; notes?: string }> = {};
 
   if (questions.length === 1) {
@@ -208,7 +151,6 @@ function parseTextAnswer(
     const trimmed = text.trim();
 
     if (q.allowMultiple && q.options) {
-      // Multi-select: parse comma-separated numbers
       const parts = trimmed.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
       const selected: string[] = [];
       for (const part of parts) {
@@ -217,239 +159,33 @@ function parseTextAnswer(
           selected.push(q.options[num - 1].label);
         }
       }
-      if (selected.length > 0) {
-        answers[q.id] = { selected };
-      } else {
-        // Treat as free-text
-        answers[q.id] = { selected: "None of the above", notes: trimmed };
-      }
+      answers[q.id] = selected.length > 0
+        ? { selected }
+        : { selected: "None of the above", notes: trimmed };
     } else if (q.options && q.options.length > 0) {
-      // Single-select with options
       const num = parseInt(trimmed, 10);
-      if (!isNaN(num) && num >= 1 && num <= q.options.length) {
-        answers[q.id] = { selected: q.options[num - 1].label };
-      } else {
-        // Free-text / "None of the above"
-        answers[q.id] = { selected: "None of the above", notes: trimmed };
-      }
+      answers[q.id] = (!isNaN(num) && num >= 1 && num <= q.options.length)
+        ? { selected: q.options[num - 1].label }
+        : { selected: "None of the above", notes: trimmed };
     } else {
-      // No options — pure free text
       answers[q.id] = { selected: trimmed };
     }
   } else {
-    // Multi-question: split by semicolons or newlines
     const parts = text.includes(";") ? text.split(";") : text.split("\n");
     questions.forEach((q, idx) => {
       const part = (parts[idx] ?? "").trim();
-      if (!part) {
-        answers[q.id] = { selected: "", notes: "(no answer)" };
-        return;
-      }
       if (q.options && q.options.length > 0) {
         const num = parseInt(part, 10);
-        if (!isNaN(num) && num >= 1 && num <= q.options.length) {
-          answers[q.id] = { selected: q.options[num - 1].label };
-        } else {
-          answers[q.id] = { selected: "None of the above", notes: part };
-        }
+        answers[q.id] = (!isNaN(num) && num >= 1 && num <= q.options.length)
+          ? { selected: q.options[num - 1].label }
+          : { selected: "None of the above", notes: part || "(no answer)" };
       } else {
-        answers[q.id] = { selected: part };
+        answers[q.id] = { selected: part || "(no answer)" };
       }
     });
   }
 
   return { response: { answers } };
-}
-
-// ── Telegram API helpers ─────────────────────────────────────────────────────
-
-async function sendQuestion(
-  botToken: string,
-  chatId: string,
-  payload: { text: string; reply_markup?: { inline_keyboard: InlineKeyboardButton[][] } },
-): Promise<number | null> {
-  try {
-    const res = await fetch(`${TELEGRAM_API}/bot${botToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: payload.text,
-        parse_mode: "HTML",
-        ...(payload.reply_markup ? { reply_markup: payload.reply_markup } : {}),
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-
-    const body = (await res.json()) as TelegramApiResponse<{ message_id: number }>;
-    if (!body.ok || !body.result) {
-      console.error(`[ask-user-bridge] sendMessage failed: ${body.description}`);
-      return null;
-    }
-    return body.result.message_id;
-  } catch (err) {
-    console.error(`[ask-user-bridge] sendMessage error: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
-async function answerCallbackQuery(botToken: string, callbackQueryId: string, text?: string): Promise<void> {
-  try {
-    await fetch(`${TELEGRAM_API}/bot${botToken}/answerCallbackQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        callback_query_id: callbackQueryId,
-        text: text ?? "✅ Received",
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch {
-    // non-fatal
-  }
-}
-
-async function editMessageReplyMarkup(
-  botToken: string,
-  chatId: string,
-  messageId: number,
-): Promise<void> {
-  try {
-    await fetch(`${TELEGRAM_API}/bot${botToken}/editMessageReplyMarkup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: { inline_keyboard: [] },
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch {
-    // non-fatal
-  }
-}
-
-async function sendConfirmation(botToken: string, chatId: string, text: string): Promise<void> {
-  try {
-    await fetch(`${TELEGRAM_API}/bot${botToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch {
-    // non-fatal
-  }
-}
-
-// ── Poll for answer ──────────────────────────────────────────────────────────
-
-/**
- * Poll Telegram for the user's answer to a question.
- * Uses its own short-poll offset tracking, completely independent of the main PollLoop.
- *
- * Listens for:
- * - callback_query with matching promptId (inline keyboard button press)
- * - text message that is a reply to the question message
- * - text message (non-reply) — treated as direct answer if it's the only pending question
- */
-async function pollForAnswer(
-  config: BridgeConfig,
-  questions: AskUserQuestion[],
-  promptId: string,
-  questionMessageId: number,
-  signal: AbortSignal | undefined,
-): Promise<AskUserResult> {
-  const deadline = Date.now() + (config.timeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS);
-  let pollOffset = 0;
-  let waitingForText = false; // true after "None of the above" button click
-
-  while (Date.now() < deadline) {
-    if (signal?.aborted) return { cancelled: true };
-
-    try {
-      const res = await fetch(`${TELEGRAM_API}/bot${config.botToken}/getUpdates`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          offset: pollOffset === 0 ? undefined : pollOffset,
-          timeout: 2,
-          allowed_updates: ["message", "callback_query"],
-        }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-
-      const body = (await res.json()) as TelegramApiResponse<FullTelegramUpdate[]>;
-      if (!body.ok || !Array.isArray(body.result)) {
-        await sleep(ANSWER_POLL_INTERVAL_MS);
-        continue;
-      }
-
-      for (const update of body.result) {
-        if (update.update_id >= pollOffset) {
-          pollOffset = update.update_id + 1;
-        }
-
-        // Check callback_query (button press)
-        if (update.callback_query) {
-          const cb = update.callback_query;
-          const senderId = cb.from.id;
-
-          if (!isAllowedUser(senderId, config.allowedUserIds)) continue;
-
-          if (cb.data?.startsWith(`auq:${promptId}:`)) {
-            await answerCallbackQuery(config.botToken, cb.id);
-
-            const result = parseCallbackAnswer(cb.data, questions, promptId);
-            if (result === null) {
-              // "None of the above" — wait for text reply
-              waitingForText = true;
-              await sendConfirmation(config.botToken, config.chatId,
-                `<i>Type your answer below:</i>`);
-              continue;
-            }
-
-            // Remove inline keyboard
-            await editMessageReplyMarkup(config.botToken, config.chatId, questionMessageId);
-            await sendConfirmation(config.botToken, config.chatId, `✅ Got it.`);
-            return result;
-          }
-        }
-
-        // Check text message
-        if (update.message?.text) {
-          const msg = update.message;
-          const senderId = msg.from?.id;
-
-          if (String(msg.chat.id) !== config.chatId) continue;
-          if (senderId == null || !isAllowedUser(senderId, config.allowedUserIds)) continue;
-
-          // Accept: reply to our question message, or any text when waiting for text, or non-reply text
-          const isReplyToQuestion = msg.reply_to_message?.message_id === questionMessageId;
-          const isDirectText = !msg.reply_to_message;
-
-          if (isReplyToQuestion || waitingForText || isDirectText) {
-            // Remove inline keyboard if present
-            await editMessageReplyMarkup(config.botToken, config.chatId, questionMessageId);
-
-            const result = parseTextAnswer(msg.text!, questions);
-            await sendConfirmation(config.botToken, config.chatId, `✅ Got it.`);
-            return result;
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[ask-user-bridge] poll error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    await sleep(ANSWER_POLL_INTERVAL_MS);
-  }
-
-  // Timeout
-  await sendConfirmation(config.botToken, config.chatId,
-    `⏰ Question timed out after ${Math.round((config.timeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS) / 60_000)} minutes. Auto-selecting default.`);
-  return { cancelled: true };
 }
 
 // ── Main bridge function ─────────────────────────────────────────────────────
@@ -458,9 +194,12 @@ let _idCounter = 0;
 
 /**
  * Send ask_user_questions to Telegram and wait for the answer.
- * Returns the structured result that pi expects.
+ *
+ * Uses loop.registerAnswerHandler() so all updates go through the single
+ * main PollLoop — no second getUpdates call, no offset races.
  */
 export async function askUserViaTelegram(
+  loop: PollLoop,
   config: BridgeConfig,
   questions: AskUserQuestion[],
   signal?: AbortSignal,
@@ -468,24 +207,76 @@ export async function askUserViaTelegram(
   if (questions.length === 0) return { cancelled: true };
 
   const promptId = `p${Date.now().toString(36)}${(++_idCounter).toString(36)}`;
+  const timeout = config.timeoutMs ?? DEFAULT_ANSWER_TIMEOUT_MS;
 
-  // Format and send
+  // Send the question
   const payload = formatQuestionMessage(questions, promptId);
-  const messageId = await sendQuestion(config.botToken, config.chatId, payload);
-  if (messageId === null) {
-    return { cancelled: true };
-  }
+  const messageId = await loop.sendMessage(payload);
+  if (messageId === null) return { cancelled: true };
 
-  // Poll for answer
-  return pollForAnswer(config, questions, promptId, messageId, signal);
-}
+  // Wait for answer via the main loop's handler
+  return new Promise<AskUserResult>((resolve) => {
+    let waitingForText = false;
+    const deadline = setTimeout(async () => {
+      loop.clearAnswerHandler();
+      await loop.sendMessage({ text: `⏰ No response after ${Math.round(timeout / 60_000)} min. Defaulting to first option.`, parse_mode: "HTML" });
+      resolve({ cancelled: true });
+    }, timeout);
 
-// ── Exports for testing ──────────────────────────────────────────────────────
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(deadline);
+        loop.clearAnswerHandler();
+        resolve({ cancelled: true });
+      }, { once: true });
+    }
 
-export { formatQuestionMessage, parseCallbackAnswer, parseTextAnswer };
+    loop.registerAnswerHandler((update: TelegramUpdate): boolean => {
+      // ── callback_query (button press) ──────────────────────────────────
+      const cb = update.callback_query;
+      if (cb) {
+        if (!isAllowedUser(cb.from.id, config.allowedUserIds)) return false;
+        if (!cb.data?.startsWith(`auq:${promptId}:`)) return false;
 
-// ── Internal helpers ─────────────────────────────────────────────────────────
+        void loop.answerCallbackQuery(cb.id);
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+        const result = parseCallbackAnswer(cb.data, questions, promptId);
+        if (result === null) {
+          // "Other" button — wait for text reply
+          waitingForText = true;
+          void loop.sendMessage({ text: `<i>Type your answer:</i>`, parse_mode: "HTML" });
+          return true; // consumed
+        }
+
+        clearTimeout(deadline);
+        loop.clearAnswerHandler();
+        void loop.clearInlineKeyboard(messageId);
+        void loop.sendMessage({ text: `✅ Got it.`, parse_mode: "HTML" });
+        resolve(result);
+        return true;
+      }
+
+      // ── text message ───────────────────────────────────────────────────
+      const msg = update.message;
+      if (!msg?.text) return false;
+      if (String(msg.chat.id) !== config.chatId) return false;
+      if (!isAllowedUser(msg.from?.id ?? 0, config.allowedUserIds)) return false;
+
+      // Accept: reply-to-question, waiting for text after "Other", or any direct text
+      const isReplyToQuestion = msg.reply_to_message?.message_id === messageId;
+      const isDirectText = !msg.reply_to_message;
+
+      if (!isReplyToQuestion && !waitingForText && !isDirectText) return false;
+
+      // Don't consume slash commands — let them dispatch normally
+      if (msg.text.startsWith("/") && !waitingForText) return false;
+
+      clearTimeout(deadline);
+      loop.clearAnswerHandler();
+      void loop.clearInlineKeyboard(messageId);
+      void loop.sendMessage({ text: `✅ Got it.`, parse_mode: "HTML" });
+      resolve(parseTextAnswer(msg.text, questions));
+      return true;
+    });
+  });
 }

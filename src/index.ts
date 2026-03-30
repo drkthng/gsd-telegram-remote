@@ -127,10 +127,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     async execute(_toolCallId: string, params: any, signal: any): Promise<any> {
       const questions = params.questions as AskUserQuestion[];
 
-      // Pause command poll loop to avoid offset conflicts
-      loop?.pause();
       try {
-        const result = await askUserViaTelegram(config, questions, signal ?? undefined);
+        const result = await askUserViaTelegram(loop!, config, questions, signal ?? undefined);
 
         if (result.cancelled) {
           return {
@@ -158,7 +156,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
           details: { response: result.response },
         };
       } finally {
-        loop?.resume();
+        // no-op: no pause/resume needed — single loop handles everything
       }
     },
   });
