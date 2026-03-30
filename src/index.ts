@@ -7,12 +7,12 @@
  *  1. Polls Telegram for incoming commands (/auto, /stop, /pause, /status, /help)
  *     and dispatches them via pi.sendUserMessage()
  *  2. Sends proactive Telegram notifications for auto-mode events:
- *       - Task complete       → "✅ Task T01 complete"
- *       - Slice complete      → "🔷 Slice S01 complete"
- *       - Milestone complete  → "🏁 Milestone M001 complete!"
- *       - Auto-mode paused    → "⏸️ Auto-mode paused"
- *       - Auto-mode stopped   → "⏹️ Auto-mode stopped"
- *       - Auto-mode blocked   → "🚫 Blocked: <reason>"
+ *       - Task complete       → "[project] ✅ Task M001/S01/T01 complete"
+ *       - Slice complete      → "[project] 🔷 Slice M001/S01 complete"
+ *       - Milestone complete  → "[project] 🏁 Milestone M001 complete!"
+ *       - Auto-mode paused    → "[project] ⏸️ Auto-mode paused"
+ *       - Auto-mode stopped   → "[project] ⏹️ Auto-mode stopped"
+ *       - Auto-mode blocked   → "[project] 🚫 Blocked: <reason>"
  *
  * NOTE: GSD's built-in sendRemoteNotification() exists but is never called from
  * auto-mode. The only Telegram messages the user currently receives are
@@ -22,8 +22,10 @@
  * to prevent our getUpdates offset advancing past a question-answer reply.
  */
 
+import path from "node:path";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { resolveConfig, injectGsdConfigResolver, isEnabled } from "./config.js";
+import { importExtensionModule } from "@gsd/pi-coding-agent";
+import { resolveConfig, isEnabled } from "./config.js";
 import { injectDeps, injectListProjects } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
@@ -36,70 +38,57 @@ let cachedActiveDetail: { mid: string; sliceId: string; taskId: string; phase: s
 
 export default async function activate(pi: ExtensionAPI): Promise<void> {
   let prefs: Record<string, unknown> | null = null;
-  let resolveRemoteConfig: (() => { token: string; channelId: string } | null) | null = null;
   let statusApi: {
     isAutoActive: () => boolean;
     isAutoPaused: () => boolean;
     getActiveDetail?: () => { mid: string; sliceId: string; taskId: string; phase: string } | null;
   } | null = null;
 
-  try {
-    const { importExtensionModule } = await import("@gsd/pi-coding-agent");
+  const prefsModule = await importExtensionModule(
+    import.meta.url,
+    "../../gsd/preferences.ts",
+  ).catch((e: unknown) => {
+    console.warn(`[gsd-telegram-remote] failed to import gsd/preferences.ts: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }) as any;
 
-    const prefsModule = await importExtensionModule(
-      import.meta.url,
-      "../gsd/preferences.js",
-    ).catch(() => null) as any;
+  if (prefsModule?.loadEffectiveGSDPreferences) {
+    prefs = prefsModule.loadEffectiveGSDPreferences()?.preferences ?? null;
+    console.log(`[gsd-telegram-remote] prefs loaded: ${prefs ? Object.keys(prefs).join(',') : 'null'}`);
+  } else {
+    console.warn(`[gsd-telegram-remote] prefs module missing loadEffectiveGSDPreferences. keys: ${prefsModule ? Object.keys(prefsModule).join(',') : 'null'}`);
+  }
 
-    if (prefsModule?.loadEffectiveGSDPreferences) {
-      prefs = prefsModule.loadEffectiveGSDPreferences()?.preferences ?? null;
-    }
+  const autoModule = await importExtensionModule(
+    import.meta.url,
+    "../../gsd/auto.ts",
+  ).catch((e: unknown) => {
+    console.warn(`[gsd-telegram-remote] failed to import gsd/auto.ts: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }) as any;
 
-    const remoteModule = await importExtensionModule(
-      import.meta.url,
-      "../remote-questions/config.js",
-    ).catch(() => null) as any;
-
-    if (remoteModule?.resolveRemoteConfig) {
-      resolveRemoteConfig = remoteModule.resolveRemoteConfig;
-    }
-
-    const autoModule = await importExtensionModule(
-      import.meta.url,
-      "../gsd/auto.js",
-    ).catch(() => null) as any;
-
-    if (autoModule?.isAutoActive && autoModule?.isAutoPaused) {
-      statusApi = {
-        isAutoActive: autoModule.isAutoActive,
-        isAutoPaused: autoModule.isAutoPaused,
-        // Returns the last GSD state snapshot synchronously from the module-level cache.
-        // The cache is refreshed on every agent_end event so it stays current without
-        // making this call-site async (which would require changing the dispatcher interface).
-        getActiveDetail: () => cachedActiveDetail,
-      };
-    }
-  } catch {
-    console.error("[gsd-telegram-remote] Not running inside GSD — extension inactive.");
-    return;
+  if (autoModule?.isAutoActive && autoModule?.isAutoPaused) {
+    statusApi = {
+      isAutoActive: autoModule.isAutoActive,
+      isAutoPaused: autoModule.isAutoPaused,
+      getActiveDetail: () => cachedActiveDetail,
+    };
   }
 
   if (!isEnabled(prefs)) return;
 
-  if (!resolveRemoteConfig) {
-    console.warn("[gsd-telegram-remote] remote-questions config not found — run /gsd remote telegram first.");
-    return;
-  }
-
-  injectGsdConfigResolver(resolveRemoteConfig);
   injectDeps(pi, statusApi);
   injectListProjects(listProjects);
 
   const config = resolveConfig(prefs);
   if (!config) {
-    console.warn("[gsd-telegram-remote] No valid config. Ensure remote_questions is configured and telegram_remote.allowed_user_ids is set.");
+    console.warn("[gsd-telegram-remote] No valid config. Set TELEGRAM_BOT_TOKEN, remote_questions.channel_id, and telegram_remote.allowed_user_ids in preferences.");
     return;
   }
+
+  // Derive project name from the working directory (folder basename)
+  const projectName = path.basename(process.cwd());
+  console.log(`[gsd-telegram-remote] activating for project: ${projectName}, chatId: ${config.chatId}, allowedUsers: ${config.allowedUserIds.join(',')}`);
 
   loop = new PollLoop({
     botToken: config.botToken,
@@ -134,9 +123,19 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
   pi.on('agent_end', async () => {
     if (!loop) return;
     try {
-      const { importExtensionModule } = await import('@gsd/pi-coding-agent');
-      const stateModule = await importExtensionModule(import.meta.url, '../gsd/state.js').catch(() => null) as any;
-      const rawState = stateModule?.deriveState ? await stateModule.deriveState(process.cwd()).catch(() => null) : null;
+      const stateModule = await importExtensionModule(import.meta.url, '../../gsd/state.ts').catch((e: unknown) => {
+        console.error('[gsd-telegram-remote] agent_end: failed to import state.js:', e);
+        return null;
+      }) as any;
+      if (!stateModule?.deriveState) {
+        console.error('[gsd-telegram-remote] agent_end: deriveState not found in state module');
+        return;
+      }
+      const rawState = await stateModule.deriveState(process.cwd()).catch((e: unknown) => {
+        console.error('[gsd-telegram-remote] agent_end: deriveState threw:', e);
+        return null;
+      });
+      console.log(`[gsd-telegram-remote] agent_end: phase=${rawState?.phase} mid=${rawState?.activeMilestone?.id} sid=${rawState?.activeSlice?.id} tid=${rawState?.activeTask?.id}`);
 
       // Refresh cached active detail for synchronous getActiveDetail() reads
       cachedActiveDetail = rawState
@@ -157,9 +156,11 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         isActive: statusApi?.isAutoActive() ?? false,
         isPaused: statusApi?.isAutoPaused() ?? false,
       };
-      const msgs = computeNotifications(prevState, curr);
+      const msgs = computeNotifications(prevState, curr, projectName);
+      console.log(`[gsd-telegram-remote] agent_end: prev=${prevState.mid}/${prevState.sliceId}/${prevState.taskId} curr=${curr.mid}/${curr.sliceId}/${curr.taskId} msgs=${msgs.length}`);
       prevState = curr;
       for (const msg of msgs) {
+        console.log(`[gsd-telegram-remote] sending: ${msg}`);
         await loop.notify(msg);
       }
 
@@ -167,13 +168,13 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
       const ceiling = typeof prefs?.budget_ceiling === 'number' ? prefs.budget_ceiling : undefined;
       if (ceiling) {
         try {
-          const metricsModule = await importExtensionModule(import.meta.url, '../gsd/metrics.js').catch(() => null) as any;
+          const metricsModule = await importExtensionModule(import.meta.url, '../../gsd/metrics.ts').catch(() => null) as any;
           if (metricsModule?.getLedger && metricsModule?.getProjectTotals) {
             const ledger = metricsModule.getLedger();
             if (ledger) {
               const totals = metricsModule.getProjectTotals(ledger.units);
               const cost: number = totals.cost ?? 0;
-              const alert = computeBudgetAlert(prevBudgetLevel, cost, ceiling);
+              const alert = computeBudgetAlert(prevBudgetLevel, cost, ceiling, projectName);
               if (alert) {
                 prevBudgetLevel = alert.newLevel;
                 await loop.notify(alert.message);
@@ -182,8 +183,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
           }
         } catch { /* non-fatal */ }
       }
-    } catch {
-      // Non-fatal — notification failures must not affect the main loop
+    } catch (e) {
+      console.error('[gsd-telegram-remote] agent_end handler threw:', e);
     }
   });
 

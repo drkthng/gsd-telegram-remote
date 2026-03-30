@@ -11,7 +11,7 @@ const base: GsdAutoState = {
   isPaused: false,
 };
 
-describe('computeNotifications', () => {
+describe('computeNotifications (no project name)', () => {
   // TC01: task advances within same mid/slice
   it('TC01 task complete: fires ✅ task notification when taskId advances', () => {
     const prev: GsdAutoState = { ...base, taskId: 'T01' };
@@ -158,6 +158,44 @@ describe('computeNotifications', () => {
   });
 });
 
+describe('computeNotifications (with project name)', () => {
+  it('prefixes all messages with [projectName]', () => {
+    const prev: GsdAutoState = { ...base, taskId: 'T01' };
+    const curr: GsdAutoState = { ...base, taskId: 'T02' };
+    const result = computeNotifications(prev, curr, 'my-project');
+    expect(result[0]).toMatch(/^\[my-project\]/);
+    expect(result[0]).toContain('✅ Task <b>M001/S01/T01</b> complete');
+  });
+
+  it('prefixes slice complete message', () => {
+    const prev: GsdAutoState = { ...base, sliceId: 'S01', taskId: 'T03' };
+    const curr: GsdAutoState = { ...base, sliceId: 'S02', taskId: 'T01' };
+    const result = computeNotifications(prev, curr, 'my-project');
+    expect(result.some(m => m.startsWith('[my-project] 🔷'))).toBe(true);
+  });
+
+  it('prefixes milestone complete message', () => {
+    const prev: GsdAutoState = { ...base, mid: 'M001' };
+    const curr: GsdAutoState = { ...base, mid: 'M002' };
+    const result = computeNotifications(prev, curr, 'my-project');
+    expect(result.some(m => m.startsWith('[my-project] 🏁'))).toBe(true);
+  });
+
+  it('prefixes stopped message', () => {
+    const prev: GsdAutoState = { ...base, isActive: true };
+    const curr: GsdAutoState = { ...base, isActive: false, isPaused: false };
+    const result = computeNotifications(prev, curr, 'my-project');
+    expect(result.some(m => m === '[my-project] ⏹️ Auto-mode stopped.')).toBe(true);
+  });
+
+  it('no prefix when projectName is undefined', () => {
+    const prev: GsdAutoState = { ...base, taskId: 'T01' };
+    const curr: GsdAutoState = { ...base, taskId: 'T02' };
+    const result = computeNotifications(prev, curr);
+    expect(result[0]).not.toMatch(/^\[/);
+  });
+});
+
 describe('computeBudgetAlert', () => {
   // TC-B01: returns null when ceiling is undefined
   it('TC-B01: returns null when ceiling is undefined', () => {
@@ -166,7 +204,8 @@ describe('computeBudgetAlert', () => {
 
   // TC-B02: returns null when ceiling is 0
   it('TC-B02: returns null when ceiling is 0', () => {
-    expect(computeBudgetAlert(0, 10, 0)).toBeNull();
+    const result = computeBudgetAlert(0, 10, 0);
+    expect(result).toBeNull();
   });
 
   // TC-B03: returns null when pct < 75
@@ -226,7 +265,6 @@ describe('computeBudgetAlert', () => {
 
   // TC-B10: does NOT fire if pct exactly at previous level boundary
   it('TC-B10: does not fire when cost is below 75% of ceiling', () => {
-    // 74% — below any threshold
     expect(computeBudgetAlert(0, 74, 100)).toBeNull();
   });
 
@@ -245,11 +283,25 @@ describe('computeBudgetAlert', () => {
     expect(result!.message).toBe('⚠️ Budget 80%: $80.00 / $100.00');
   });
 
-  // Extra: non-integer cost and ceiling
+  // TC-B13: formats fractional dollar amounts with 2 decimal places
   it('TC-B13: formats fractional dollar amounts with 2 decimal places', () => {
     const result = computeBudgetAlert(0, 7.5, 10);
     expect(result).not.toBeNull();
     expect(result!.message).toContain('$7.50');
     expect(result!.message).toContain('$10.00');
+  });
+
+  // TC-B14: prefixes budget alert message with project name
+  it('TC-B14: prefixes budget alert with [projectName] when provided', () => {
+    const result = computeBudgetAlert(0, 80, 100, 'my-project');
+    expect(result).not.toBeNull();
+    expect(result!.message).toBe('[my-project] ⚠️ Budget 80%: $80.00 / $100.00');
+  });
+
+  // TC-B15: no prefix when projectName is undefined
+  it('TC-B15: no prefix when projectName is undefined', () => {
+    const result = computeBudgetAlert(0, 80, 100);
+    expect(result).not.toBeNull();
+    expect(result!.message).not.toMatch(/^\[/);
   });
 });

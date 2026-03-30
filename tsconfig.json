@@ -10,7 +10,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "skipLibCheck": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "paths": {
+      "@gsd/pi-coding-agent": ["C:/Users/Gordon/AppData/Roaming/npm/node_modules/gsd-pi/node_modules/@gsd/pi-coding-agent/dist/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "tests"]

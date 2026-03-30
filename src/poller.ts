@@ -117,7 +117,12 @@ export class PollLoop {
     const msg = update.message;
     if (!msg?.text) return;
 
-    if (String(msg.chat.id) !== this.opts.chatId) return;
+    console.log(`[gsd-telegram-remote] update: chat=${msg.chat.id} from=${msg.from?.id} text=${msg.text.slice(0,50)}`);
+
+    if (String(msg.chat.id) !== this.opts.chatId) {
+      console.log(`[gsd-telegram-remote] dropped: chat ${msg.chat.id} !== configured ${this.opts.chatId}`);
+      return;
+    }
 
     // Skip replies — those belong to the question-answer flow
     if (msg.reply_to_message) return;
@@ -125,9 +130,13 @@ export class PollLoop {
     const senderId = getSenderId(msg);
     if (senderId === null) return;
 
-    if (!isAllowedUser(senderId, this.opts.allowedUserIds)) return;
+    if (!isAllowedUser(senderId, this.opts.allowedUserIds)) {
+      console.log(`[gsd-telegram-remote] dropped: sender ${senderId} not in allowedUserIds [${this.opts.allowedUserIds.join(',')}]`);
+      return;
+    }
 
     const cmd = parseCommand(msg.text);
+    console.log(`[gsd-telegram-remote] dispatching cmd: ${cmd.type}`);
     const result = await executeCommand(cmd);
 
     await sendReply(this.opts.botToken, this.opts.chatId, result.reply);

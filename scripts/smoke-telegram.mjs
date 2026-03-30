@@ -47,12 +47,23 @@ async function sendMessage(text) {
   return json;
 }
 
-// Representative messages matching M004 rich-path format
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Derive project name from the script's directory (same logic as index.ts)
+const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PROJECT_NAME = path.basename(PROJECT_DIR);
+
+function withProject(text) {
+  return `[${PROJECT_NAME}] ${text}`;
+}
+
+// Representative messages matching M004 rich-path format + project name prefix
 const messages = [
-  { label: 'task',      text: '✅ Task <b>M004/S01/T01</b> complete' },
-  { label: 'slice',     text: '🔷 Slice <b>M004/S01</b> complete' },
-  { label: 'milestone', text: '🏁 Milestone <b>M004</b> complete!' },
-  { label: 'budget',    text: '⚠️ Budget 80%: $4.00 / $5.00' },
+  { label: 'task',      text: withProject('✅ Task <b>M004/S01/T01</b> complete') },
+  { label: 'slice',     text: withProject('🔷 Slice <b>M004/S01</b> complete') },
+  { label: 'milestone', text: withProject('🏁 Milestone <b>M004</b> complete!') },
+  { label: 'budget',    text: withProject('⚠️ Budget 80%: $4.00 / $5.00') },
 ];
 
 let successCount = 0;

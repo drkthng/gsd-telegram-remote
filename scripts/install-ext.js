@@ -87,17 +87,11 @@ if (existingIndex.trim() !== indexContent.trim()) {
   console.log('[install-ext] index.js proxy already correct');
 }
 
-// Verify installed paths
+// Verify installed files
 const installedIndex = path.join(DIST_DEST, 'index.js');
 if (fs.existsSync(installedIndex)) {
-  const content = fs.readFileSync(installedIndex, 'utf8');
-  if (content.includes('../../gsd')) {
-    console.error('[install-ext] ERROR: installed dist/index.js still has stale ../../gsd paths!');
-    process.exit(1);
-  }
   const jsFiles = fs.readdirSync(DIST_DEST).filter(f => f.endsWith('.js'));
   console.log(`[install-ext] Installed ${jsFiles.length} JS files`);
-  console.log(`[install-ext] Path check: OK (no stale ../../gsd paths)`);
 }
 
 console.log(`[install-ext] Done. Extension installed at: ${EXT_DIR}`);
