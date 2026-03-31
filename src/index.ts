@@ -83,7 +83,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   const config = resolveConfig(prefs);
   if (!config) {
-    console.warn("[gsd-telegram-remote] No valid config. Set TELEGRAM_BOT_TOKEN, remote_questions.channel_id, and telegram_remote.allowed_user_ids in preferences.");
+    console.warn("[gsd-telegram-remote] No valid config. Set TELEGRAM_BOT_TOKEN, telegram_remote.chat_id, and telegram_remote.allowed_user_ids in preferences.");
     return;
   }
 

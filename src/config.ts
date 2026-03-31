@@ -42,7 +42,7 @@ function hydrateTokenFromAuth(): void {
  * Read telegram_remote block directly from preferences.md YAML frontmatter.
  * GSD's preferences validator strips unknown keys, so we parse it ourselves.
  */
-function readTelegramRemoteBlock(): { enabled?: boolean; allowed_user_ids?: number[] } | null {
+function readTelegramRemoteBlock(): { enabled?: boolean; chat_id?: string; allowed_user_ids?: number[] } | null {
   const paths = [
     join(process.cwd(), ".gsd", "preferences.md"),
     join(homedir(), ".gsd", "preferences.md"),
@@ -66,10 +66,12 @@ function readTelegramRemoteBlock(): { enabled?: boolean; allowed_user_ids?: numb
 
       const block = match[1];
       const enabledMatch = block.match(/enabled:\s*(true|false)/);
+      const chatIdMatch = block.match(/chat_id:\s*(-?\d+)/);
       const idsMatch = block.match(/allowed_user_ids:\s*\[([^\]]*)\]/);
 
       return {
         enabled: enabledMatch ? enabledMatch[1] === "true" : undefined,
+        chat_id: chatIdMatch ? chatIdMatch[1] : undefined,
         allowed_user_ids: idsMatch
           ? idsMatch[1].split(",").map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n > 0)
           : undefined,
@@ -110,11 +112,10 @@ export function resolveConfig(prefs: Record<string, unknown> | null): RemoteConf
     return null;
   }
 
-  const rq = (prefs as { remote_questions?: { channel_id?: unknown } } | null)
-    ?.remote_questions;
-  const chatId = rq?.channel_id != null ? String(rq.channel_id) : null;
+  const block = readTelegramRemoteBlock();
+  const chatId = block?.chat_id ?? null;
   if (!chatId) {
-    console.warn("[gsd-telegram-remote] config: remote_questions.channel_id missing");
+    console.warn("[gsd-telegram-remote] config: telegram_remote.chat_id missing in preferences");
     return null;
   }
 
