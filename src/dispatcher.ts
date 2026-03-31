@@ -47,6 +47,23 @@ let _listProjects: ListProjectsFn | null = null;
 let _bus: CommandBus | null = null;
 let _thisProject: string = '';
 let _findProjectDir: FindProjectDirFn | null = null;
+let _autoModule: { startAuto: Function; stopAuto: Function; pauseAuto: Function } | null = null;
+
+/** Build a minimal ctx stub for GSD auto functions — only ui.notify and ui.setStatus are needed. */
+function makeCtxStub(pi: ExtensionAPI) {
+  return {
+    ui: {
+      notify: (msg: string, _level?: string) => console.log(`[gsd-auto] ${msg}`),
+      setStatus: (_key: string, _val: unknown) => {},
+      // Stubs for less-common ctx.ui methods — safe no-ops
+      setWidget: () => {},
+      setFooter: () => {},
+      input: () => Promise.resolve(null),
+      confirm: () => Promise.resolve(false),
+      select: () => Promise.resolve(null),
+    },
+  };
+}
 
 /**
  * Set to true when /auto is dispatched to the local session.
@@ -72,6 +89,11 @@ export function injectListProjects(fn: ListProjectsFn | null): void {
 export function injectBus(bus: CommandBus | null, thisProject: string): void {
   _bus = bus;
   _thisProject = thisProject;
+}
+
+/** Inject GSD auto module for direct startAuto/stopAuto/pauseAuto invocation. */
+export function injectAutoModule(mod: { startAuto: Function; stopAuto: Function; pauseAuto: Function } | null): void {
+  _autoModule = mod;
 }
 
 /** Override findProjectDir for tests. Pass null to restore the default. */
@@ -211,7 +233,12 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      _pi.sendUserMessage("/gsd auto");
+      if (_autoModule) {
+        _autoModule.startAuto(makeCtxStub(_pi), _pi, process.cwd(), false).catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] startAuto error: ${e}`));
+      } else {
+        _pi.sendUserMessage("/gsd auto");
+      }
       _localAutoDispatched = true;
       return { reply: `▶️ Sent <code>/gsd auto</code> → <b>${project}</b> — check terminal for progress.`, stateChanged: true };
     }
@@ -222,7 +249,12 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      _pi.sendUserMessage("/gsd stop");
+      if (_autoModule) {
+        _autoModule.stopAuto(makeCtxStub(_pi), _pi, "remote").catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] stopAuto error: ${e}`));
+      } else {
+        _pi.sendUserMessage("/gsd stop");
+      }
       return { reply: `⏹️ Sent <code>/gsd stop</code> → <b>${project}</b>.`, stateChanged: true };
     }
 
@@ -232,7 +264,12 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      _pi.sendUserMessage("/gsd pause");
+      if (_autoModule) {
+        _autoModule.pauseAuto(makeCtxStub(_pi), _pi, "remote").catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] pauseAuto error: ${e}`));
+      } else {
+        _pi.sendUserMessage("/gsd pause");
+      }
       return { reply: `⏸️ Sent <code>/gsd pause</code> → <b>${project}</b>. Send /auto ${cmd.target} to resume.`, stateChanged: true };
     }
 

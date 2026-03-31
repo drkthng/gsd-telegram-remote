@@ -121,5 +121,47 @@ for (const proj of PROJECTS) {
   // Clean worktrees
   rmSync(join(base, '.gsd', 'worktrees'), { recursive: true, force: true });
 
+  // Clean runtime state files
+  for (const f of ['completed-units.json', 'event-log.jsonl', 'routing-history.json', 'auto.lock', 'metrics.json', 'state-manifest.json']) {
+    try { rmSync(join(base, '.gsd', f)); } catch { /* absent is fine */ }
+  }
+  rmSync(join(base, '.gsd', 'runtime'), { recursive: true, force: true });
+  mkdirSync(join(base, '.gsd', 'runtime'), { recursive: true });
+  rmSync(join(base, '.gsd', 'activity'), { recursive: true, force: true });
+  rmSync(join(base, '.gsd', 'reports'), { recursive: true, force: true });
+  rmSync(join(base, '.gsd', 'journal'), { recursive: true, force: true });
+
+  // Reset STATE.md
+  writeFileSync(join(base, '.gsd', 'STATE.md'), `# GSD State
+
+**Active Milestone:** M001: Alpha batch
+**Active Slice:** S01: Alpha wave 1
+**Phase:** executing
+**Requirements Status:** 0 active · 0 validated · 0 deferred · 0 out of scope
+
+## Milestone Registry
+- 🔄 **M001:** Alpha batch
+- ⬜ **M002:** Beta batch
+- ⬜ **M003:** Gamma batch
+- ⬜ **M004:** Notification + Interaction test
+
+## Recent Decisions
+- None recorded
+
+## Blockers
+- None
+
+## Next Action
+Execute M001 / S01 / T01.
+`);
+
+  // Write project-level PREFERENCES.md so auto-mode runs straight through
+  writeFileSync(join(base, '.gsd', 'PREFERENCES.md'),
+    '---\nphases:\n  require_slice_discussion: false\n---\n');
+
+  // Reset git to single commit
+  const { execSync } = await import('node:child_process');
+  execSync('git add -A && git commit --allow-empty -m "reset: clean slate" || true', { cwd: base, stdio: 'pipe' });
+
   console.log(`${proj}: all plan files + dirs created`);
 }
