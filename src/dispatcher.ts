@@ -47,23 +47,8 @@ let _listProjects: ListProjectsFn | null = null;
 let _bus: CommandBus | null = null;
 let _thisProject: string = '';
 let _findProjectDir: FindProjectDirFn | null = null;
-let _autoModule: { startAuto: Function; stopAuto: Function; pauseAuto: Function } | null = null;
-
-/** Build a minimal ctx stub for GSD auto functions — only ui.notify and ui.setStatus are needed. */
-function makeCtxStub(pi: ExtensionAPI) {
-  return {
-    ui: {
-      notify: (msg: string, _level?: string) => console.log(`[gsd-auto] ${msg}`),
-      setStatus: (_key: string, _val: unknown) => {},
-      // Stubs for less-common ctx.ui methods — safe no-ops
-      setWidget: () => {},
-      setFooter: () => {},
-      input: () => Promise.resolve(null),
-      confirm: () => Promise.resolve(false),
-      select: () => Promise.resolve(null),
-    },
-  };
-}
+let _gsdCommandDispatcher: ((args: string, ctx: unknown, pi: ExtensionAPI) => Promise<void>) | null = null;
+let _cachedCtx: unknown = null;
 
 /**
  * Set to true when /auto is dispatched to the local session.
@@ -91,9 +76,13 @@ export function injectBus(bus: CommandBus | null, thisProject: string): void {
   _thisProject = thisProject;
 }
 
-/** Inject GSD auto module for direct startAuto/stopAuto/pauseAuto invocation. */
-export function injectAutoModule(mod: { startAuto: Function; stopAuto: Function; pauseAuto: Function } | null): void {
-  _autoModule = mod;
+/** Inject GSD command dispatcher and cache the real ctx from an event handler. */
+export function injectGsdCommandDispatcher(fn: ((args: string, ctx: unknown, pi: ExtensionAPI) => Promise<void>) | null): void {
+  _gsdCommandDispatcher = fn;
+}
+
+export function setCachedCtx(ctx: unknown): void {
+  _cachedCtx = ctx;
 }
 
 /** Override findProjectDir for tests. Pass null to restore the default. */
@@ -233,9 +222,9 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      if (_autoModule) {
-        _autoModule.startAuto(makeCtxStub(_pi), _pi, process.cwd(), false).catch((e: unknown) =>
-          console.error(`[gsd-telegram-remote] startAuto error: ${e}`));
+      if (_gsdCommandDispatcher && _cachedCtx) {
+        _gsdCommandDispatcher("auto", _cachedCtx, _pi).catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] /gsd auto error: ${e}`));
       } else {
         _pi.sendUserMessage("/gsd auto");
       }
@@ -249,9 +238,9 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      if (_autoModule) {
-        _autoModule.stopAuto(makeCtxStub(_pi), _pi, "remote").catch((e: unknown) =>
-          console.error(`[gsd-telegram-remote] stopAuto error: ${e}`));
+      if (_gsdCommandDispatcher && _cachedCtx) {
+        _gsdCommandDispatcher("stop", _cachedCtx, _pi).catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] /gsd stop error: ${e}`));
       } else {
         _pi.sendUserMessage("/gsd stop");
       }
@@ -264,9 +253,9 @@ export async function executeCommand(cmd: RemoteCommand): Promise<DispatchResult
       if (_bus && project !== _thisProject) {
         return await _bus.send(project, cmd);
       }
-      if (_autoModule) {
-        _autoModule.pauseAuto(makeCtxStub(_pi), _pi, "remote").catch((e: unknown) =>
-          console.error(`[gsd-telegram-remote] pauseAuto error: ${e}`));
+      if (_gsdCommandDispatcher && _cachedCtx) {
+        _gsdCommandDispatcher("pause", _cachedCtx, _pi).catch((e: unknown) =>
+          console.error(`[gsd-telegram-remote] /gsd pause error: ${e}`));
       } else {
         _pi.sendUserMessage("/gsd pause");
       }

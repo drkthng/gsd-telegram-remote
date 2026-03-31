@@ -27,7 +27,7 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { importExtensionModule } from "@gsd/pi-coding-agent";
 import { resolveConfig, isEnabled } from "./config.js";
-import { injectDeps, injectListProjects, injectBus, injectAutoModule, executeCommand, consumeLocalAutoDispatched } from "./dispatcher.js";
+import { injectDeps, injectListProjects, injectBus, injectGsdCommandDispatcher, setCachedCtx, executeCommand, consumeLocalAutoDispatched } from "./dispatcher.js";
 import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
 import { CommandBus } from "./command-bus.js";
@@ -76,12 +76,16 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     };
   }
 
-  if (autoModule?.startAuto && autoModule?.stopAuto && autoModule?.pauseAuto) {
-    injectAutoModule({
-      startAuto: autoModule.startAuto,
-      stopAuto: autoModule.stopAuto,
-      pauseAuto: autoModule.pauseAuto,
-    });
+  // Import GSD's command dispatcher so we can invoke /gsd auto|stop|pause
+  // with the real ctx (which includes modelRegistry etc) instead of sendUserMessage
+  // which bypasses the slash command handler.
+  const gsdCommandsModule = await importExtensionModule(
+    import.meta.url,
+    "../../gsd/commands/dispatcher.ts",
+  ).catch(() => null) as any;
+
+  if (gsdCommandsModule?.handleGSDCommand) {
+    injectGsdCommandDispatcher(gsdCommandsModule.handleGSDCommand);
   }
 
   if (!isEnabled(prefs)) return;
@@ -188,7 +192,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
   let prevState: GsdAutoState = EMPTY_STATE;
   let prevBudgetLevel = 0;
 
-  pi.on('agent_end', async () => {
+  pi.on('agent_end', async (_event, ctx) => {
+    // Capture the real ctx so dispatcher can invoke /gsd commands with it
+    if (ctx) setCachedCtx(ctx);
     if (!loop) return;
     try {
       const stateModule = await importExtensionModule(import.meta.url, '../../gsd/state.ts').catch((e: unknown) => {
