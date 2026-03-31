@@ -182,6 +182,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
 
   pi.on('agent_end', async () => {
     if (!loop) return;
+    console.log(`[gsd-telegram-remote] agent_end fired — cwd=${process.cwd()} isActive=${statusApi?.isAutoActive() ?? false}`);
     try {
       const stateModule = await importExtensionModule(import.meta.url, '../../gsd/state.ts').catch((e: unknown) => {
         console.error('[gsd-telegram-remote] agent_end: failed to import state.js:', e);
@@ -215,6 +216,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         isPaused: statusApi?.isAutoPaused() ?? false,
       };
       const msgs = computeNotifications(prevState, curr, projectName);
+      console.log(`[gsd-telegram-remote] agent_end state: prev={mid:${prevState.mid},slice:${prevState.sliceId},task:${prevState.taskId},active:${prevState.isActive}} curr={mid:${curr.mid},slice:${curr.sliceId},task:${curr.taskId},active:${curr.isActive}} msgs=${JSON.stringify(msgs)}`);
       prevState = curr;
       for (const msg of msgs) {
         await loop.notify(msg);

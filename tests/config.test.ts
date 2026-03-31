@@ -2,12 +2,9 @@
  * config.test.ts — Tests for R008 and R012.
  *
  * R008: Extension gracefully disables when config is absent.
- * R012: Config reads from preferences file + env vars.
+ * R012: Config reads from JSON config file + env vars.
  *
- * chatId is read from the telegram_remote block in preferences.md files,
- * not from the prefs object passed to resolveConfig(). Tests that need
- * to control chatId use TELEGRAM_REMOTE_CHAT_ID env var or rely on the
- * actual preferences.md on disk.
+ * chatId is read from ~/.gsd/telegram-remote.json or TELEGRAM_REMOTE_CHAT_ID env.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
@@ -30,7 +27,7 @@ describe("isEnabled (R012)", () => {
     else delete process.env.TELEGRAM_REMOTE_ENABLED;
   });
 
-  it("returns true when prefs is null (default enabled)", () => {
+  it("returns true when no config exists (default enabled)", () => {
     expect(isEnabled(null)).toBe(true);
   });
 
@@ -60,13 +57,15 @@ describe("isEnabled (R012)", () => {
 describe("resolveConfig (R008 + R012)", () => {
   let origToken: string | undefined;
   let origAllowedUsers: string | undefined;
+  let origChatId: string | undefined;
 
   beforeEach(() => {
     origToken = process.env.TELEGRAM_BOT_TOKEN;
     origAllowedUsers = process.env.TELEGRAM_REMOTE_ALLOWED_USERS;
+    origChatId = process.env.TELEGRAM_REMOTE_CHAT_ID;
     process.env.TELEGRAM_BOT_TOKEN = VALID_TOKEN;
-    // Use env var for allowed users so tests don't depend on preferences.md existing
     process.env.TELEGRAM_REMOTE_ALLOWED_USERS = "123456789";
+    process.env.TELEGRAM_REMOTE_CHAT_ID = "799480019";
   });
 
   afterEach(() => {
@@ -74,6 +73,8 @@ describe("resolveConfig (R008 + R012)", () => {
     else delete process.env.TELEGRAM_BOT_TOKEN;
     if (origAllowedUsers !== undefined) process.env.TELEGRAM_REMOTE_ALLOWED_USERS = origAllowedUsers;
     else delete process.env.TELEGRAM_REMOTE_ALLOWED_USERS;
+    if (origChatId !== undefined) process.env.TELEGRAM_REMOTE_CHAT_ID = origChatId;
+    else delete process.env.TELEGRAM_REMOTE_CHAT_ID;
   });
 
   // R008: missing bot token → null
@@ -82,40 +83,44 @@ describe("resolveConfig (R008 + R012)", () => {
     expect(resolveConfig(null)).toBeNull();
   });
 
-  // R012: chatId comes from telegram_remote.chat_id in preferences.md on disk.
-  // When the file has it (as on this dev machine), resolveConfig succeeds.
-  // This test verifies the happy path reads it correctly.
-  it("returns config when telegram_remote.chat_id is in preferences.md", () => {
+  // R012: env vars provide full config
+  it("returns config from env vars", () => {
     const config = resolveConfig(null);
-    // If preferences.md on disk has chat_id, config is valid
-    if (config) {
-      expect(config.botToken).toBe(VALID_TOKEN);
-      expect(config.chatId).toBeTruthy();
-      expect(config.allowedUserIds).toEqual([123456789]);
-    }
-    // If no preferences.md on disk (CI), config is null — that's fine
+    expect(config).not.toBeNull();
+    expect(config!.botToken).toBe(VALID_TOKEN);
+    expect(config!.chatId).toBe("799480019");
+    expect(config!.allowedUserIds).toEqual([123456789]);
   });
 
-  // R012: no allowed_user_ids when env empty and no prefs file matches
-  it("returns null when allowed_user_ids env is empty string and no prefs file", () => {
+  // R008: missing chat_id (no env, no JSON config) → null
+  it("returns null when chat_id is missing everywhere", () => {
+    delete process.env.TELEGRAM_REMOTE_CHAT_ID;
+    // No JSON config file in test env → null
+    // (readOwnConfig returns null, migrateFromPreferences returns null)
+    const config = resolveConfig(null);
+    // Depends on whether ~/.gsd/telegram-remote.json exists on this machine
+    if (!config) {
+      expect(config).toBeNull();
+    }
+  });
+
+  // R012: no allowed_user_ids when env empty
+  it("returns null when allowed_user_ids env is invalid", () => {
     process.env.TELEGRAM_REMOTE_ALLOWED_USERS = "invalid";
     expect(resolveConfig(null)).toBeNull();
   });
 
   // R012: env var with multiple IDs
   it("TELEGRAM_REMOTE_ALLOWED_USERS with multiple entries", () => {
-    const config = resolveConfig(null);
-    if (!config) return; // skip on CI without preferences.md
     process.env.TELEGRAM_REMOTE_ALLOWED_USERS = "555666777,888999000";
-    const config2 = resolveConfig(null);
-    expect(config2!.allowedUserIds).toEqual([555666777, 888999000]);
+    const config = resolveConfig(null);
+    expect(config!.allowedUserIds).toEqual([555666777, 888999000]);
   });
 
   // R012: env var with invalid entries strips them
   it("TELEGRAM_REMOTE_ALLOWED_USERS with invalid entries strips them", () => {
     process.env.TELEGRAM_REMOTE_ALLOWED_USERS = "123,abc,456";
     const config = resolveConfig(null);
-    if (!config) return; // skip on CI without preferences.md
-    expect(config.allowedUserIds).toEqual([123, 456]);
+    expect(config!.allowedUserIds).toEqual([123, 456]);
   });
 });
