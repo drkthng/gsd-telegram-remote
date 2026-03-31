@@ -14,36 +14,11 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { isProcessAlive } from "./process-utils.js";
 
 const LOCK_FILE = join(homedir(), ".gsd", "telegram-remote-poll.lock");
-const IS_WINDOWS = process.platform === "win32";
-
-function isProcessAlive(pid: number): boolean {
-  if (IS_WINDOWS) {
-    // process.kill(pid, 0) gives false positives on Windows for dead PIDs.
-    // Use tasklist which reliably reports actual running processes.
-    try {
-      const out = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
-        encoding: "utf-8",
-        timeout: 3000,
-        windowsHide: true,
-      });
-      // tasklist prints the process row if found, or "INFO: No tasks..." if not
-      return out.includes(String(pid));
-    } catch {
-      return false;
-    }
-  }
-  try {
-    process.kill(pid, 0); // signal 0 = existence check (reliable on Unix)
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Try to acquire the poll lock. Returns true if this process now owns it.

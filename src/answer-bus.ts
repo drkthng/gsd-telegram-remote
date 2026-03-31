@@ -29,6 +29,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync, unlin
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { TelegramUpdate } from "./types.js";
+import { isProcessAlive } from "./process-utils.js";
 
 const BUS_DIR = join(homedir(), ".gsd", "telegram-remote-answers");
 const POLL_INTERVAL_MS = 500;
@@ -174,6 +175,13 @@ export async function routeToAnswerBus(
       const matchesText = isTextMsg && msg && String(msg.chat.id) === pending.chatId;
 
       if (!matchesCallback && !matchesText) continue;
+
+      // Stale pending from a dead session — clean up and skip
+      if (!isProcessAlive(pending.pid)) {
+        try { unlinkSync(join(BUS_DIR, file)); } catch { /* best-effort */ }
+        try { unlinkSync(answerPath(pending.pid, pending.promptId)); } catch { /* best-effort */ }
+        continue;
+      }
 
       // Write answer
       const answer: BusAnswer = cb?.data
