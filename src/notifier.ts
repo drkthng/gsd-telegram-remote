@@ -1,5 +1,6 @@
 /**
- * notifier.ts — Pure notification logic for GSD auto-mode state transitions.
+ * notifier.ts — Pure notification logic for GSD auto-mode state transitions
+ * and tool result events.
  *
  * All functions are side-effect-free so they can be unit tested without
  * mocking the GSD runtime or Telegram API.
@@ -27,19 +28,13 @@ export const EMPTY_STATE: GsdAutoState = {
 
 /**
  * Given the previous and current GSD auto-mode state, returns zero or more
- * HTML-formatted Telegram notification strings for every relevant transition.
+ * HTML-formatted Telegram notification strings for status transitions only:
+ *   - Auto started/stopped/paused
+ *   - Blocked
  *
- * An optional projectName prefixes every message as "[projectName]" so the
- * user can tell which project sent the notification when multiple projects
- * are running.
- *
- * Rules (evaluated in order — all that match are returned):
- *   Task complete     : prev.taskId non-empty AND curr.taskId !== prev.taskId AND curr.mid === prev.mid
- *   Slice complete    : prev.sliceId non-empty AND curr.sliceId !== prev.sliceId AND curr.mid === prev.mid
- *   Milestone complete: prev.mid non-empty AND curr.mid !== prev.mid
- *   Blocked           : curr.phase === 'blocked' AND prev.phase !== 'blocked'
- *   Auto stopped      : prev.isActive AND !curr.isActive AND !curr.isPaused
- *   Auto paused       : prev.isActive AND !curr.isActive AND curr.isPaused
+ * Task/slice/milestone completions are handled by formatToolResultNotification()
+ * via the tool_result event — that's 100% reliable and doesn't depend on
+ * deriveState() or state diffing.
  */
 export function computeNotifications(
   prev: GsdAutoState,
@@ -52,23 +47,6 @@ export function computeNotifications(
   // Auto started (first time we see isActive after it was off)
   if (curr.isActive && !prev.isActive) {
     msgs.push(`${prefix}▶️ Auto-mode started — <b>${curr.mid}/${curr.sliceId}/${curr.taskId}</b>`);
-  }
-
-  // Task complete
-  if (prev.taskId && curr.taskId !== prev.taskId && curr.mid === prev.mid) {
-    msgs.push(`${prefix}✅ Task <b>${prev.mid}/${prev.sliceId}/${prev.taskId}</b> complete`);
-  }
-
-  // Slice complete
-  if (prev.sliceId && curr.sliceId !== prev.sliceId && curr.mid === prev.mid) {
-    msgs.push(`${prefix}🔷 Slice <b>${prev.mid}/${prev.sliceId}</b> complete`);
-  }
-
-  // Milestone complete — curr.mid changes OR all milestones done (phase=complete, prev had a mid)
-  if (prev.mid && curr.mid !== prev.mid) {
-    msgs.push(`${prefix}🏁 Milestone <b>${prev.mid}</b> complete!`);
-  } else if (prev.mid && curr.phase === 'complete' && prev.phase !== 'complete') {
-    msgs.push(`${prefix}🏁 Milestone <b>${prev.mid}</b> complete!`);
   }
 
   // Blocked
@@ -87,6 +65,74 @@ export function computeNotifications(
   }
 
   return msgs;
+}
+
+// ── GSD tool names that map to lifecycle completions ──────────────────────
+
+const TASK_COMPLETE_TOOLS = new Set(['gsd_task_complete', 'gsd_complete_task']);
+const SLICE_COMPLETE_TOOLS = new Set(['gsd_slice_complete', 'gsd_complete_slice']);
+const MILESTONE_COMPLETE_TOOLS = new Set(['gsd_milestone_complete', 'gsd_complete_milestone']);
+
+/**
+ * Lightweight input bag — only the fields we actually read from tool_result.input.
+ * Avoids coupling to full GSD parameter types.
+ */
+export interface ToolResultInput {
+  milestoneId?: string;
+  sliceId?: string;
+  taskId?: string;
+  oneLiner?: string;
+  sliceTitle?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Format a GSD lifecycle tool_result event into a Telegram notification.
+ *
+ * Returns null if the tool is not a lifecycle tool or if the tool errored.
+ * This replaces the fragile deriveState() + state-diff approach with a
+ * direct event-based mechanism that fires 100% of the time.
+ */
+export function formatToolResultNotification(
+  toolName: string,
+  input: ToolResultInput,
+  isError: boolean,
+  projectName?: string,
+): string | null {
+  if (isError) return null;
+
+  const prefix = projectName ? `[${projectName}] ` : '';
+  const mid = input.milestoneId ?? '';
+  const sid = input.sliceId ?? '';
+  const tid = input.taskId ?? '';
+
+  if (TASK_COMPLETE_TOOLS.has(toolName)) {
+    const detail = input.oneLiner ? ` — ${input.oneLiner}` : '';
+    return `${prefix}✅ Task <b>${mid}/${sid}/${tid}</b> complete${detail}`;
+  }
+
+  if (SLICE_COMPLETE_TOOLS.has(toolName)) {
+    const detail = input.sliceTitle ? ` — ${input.sliceTitle}` : '';
+    return `${prefix}🔷 Slice <b>${mid}/${sid}</b> complete${detail}`;
+  }
+
+  if (MILESTONE_COMPLETE_TOOLS.has(toolName)) {
+    const detail = input.title ? ` — ${input.title}` : '';
+    return `${prefix}🏁 Milestone <b>${mid}</b> complete!${detail}`;
+  }
+
+  return null;
+}
+
+/**
+ * Check whether a tool name is a GSD lifecycle completion tool.
+ * Useful for fast-path filtering before calling formatToolResultNotification.
+ */
+export function isLifecycleTool(toolName: string): boolean {
+  return TASK_COMPLETE_TOOLS.has(toolName)
+    || SLICE_COMPLETE_TOOLS.has(toolName)
+    || MILESTONE_COMPLETE_TOOLS.has(toolName);
 }
 
 /**

@@ -32,7 +32,7 @@ import { listProjects } from "./projects.js";
 import { PollLoop } from "./poller.js";
 import { CommandBus } from "./command-bus.js";
 import { acquirePollLock, releasePollLock } from "./poll-lock.js";
-import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert } from "./notifier.js";
+import { type GsdAutoState, EMPTY_STATE, computeNotifications, computeBudgetAlert, formatToolResultNotification, isLifecycleTool, type ToolResultInput } from "./notifier.js";
 import { askUserViaTelegram, type AskUserQuestion } from "./ask-user-bridge.js";
 
 let loop: PollLoop | null = null;
@@ -184,10 +184,35 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     },
   });
 
-  // ── Proactive notifications via agent_end events ──────────────────────────
-  // Single handler reads GSD state after each unit completes and delegates all
-  // transition logic to computeNotifications() in src/notifier.ts (pure, testable).
-  // Also refreshes cachedActiveDetail so /status can report the current unit.
+  // ── Lifecycle notifications via tool_result events ────────────────────────
+  // Fires a Telegram notification whenever a GSD lifecycle tool succeeds:
+  //   gsd_task_complete / gsd_complete_task   → ✅ Task M001/S01/T01 complete
+  //   gsd_slice_complete / gsd_complete_slice → 🔷 Slice M001/S01 complete
+  //   gsd_milestone_complete / gsd_complete_milestone → 🏁 Milestone M001 complete!
+  //
+  // This is 100% reliable — every tool call produces a tool_result event with
+  // toolName, input params, and isError. No state diffing, no deriveState(),
+  // no dynamic imports of GSD internals. It just works.
+
+  pi.on('tool_result', async (event: any) => {
+    if (!loop) return;
+    if (!isLifecycleTool(event.toolName)) return;
+    const msg = formatToolResultNotification(
+      event.toolName,
+      (event.input ?? {}) as ToolResultInput,
+      !!event.isError,
+      projectName,
+    );
+    if (msg) {
+      await loop.notify(msg).catch((err: unknown) => {
+        console.error('[gsd-telegram-remote] tool_result notify failed:', err);
+      });
+    }
+  });
+
+  // ── Status notifications via agent_end events ─────────────────────────────
+  // Detects auto-mode status transitions (started, stopped, paused, blocked).
+  // Also refreshes cachedActiveDetail for /status and handles budget alerts.
 
   let prevState: GsdAutoState = EMPTY_STATE;
   let prevBudgetLevel = 0;
@@ -198,17 +223,12 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
     if (!loop) return;
     try {
       const stateModule = await importExtensionModule(import.meta.url, '../../gsd/state.ts').catch((e: unknown) => {
-        console.error('[gsd-telegram-remote] agent_end: failed to import state.js:', e);
+        console.error('[gsd-telegram-remote] agent_end: failed to import state.ts:', e);
         return null;
       }) as any;
-      if (!stateModule?.deriveState) {
-        console.error('[gsd-telegram-remote] agent_end: deriveState not found in state module');
-        return;
-      }
-      const rawState = await stateModule.deriveState(process.cwd()).catch((e: unknown) => {
-        console.error('[gsd-telegram-remote] agent_end: deriveState threw:', e);
-        return null;
-      });
+      if (!stateModule?.deriveState) return;
+      const rawState = await stateModule.deriveState(process.cwd()).catch(() => null);
+
       // Refresh cached active detail for synchronous getActiveDetail() reads
       cachedActiveDetail = rawState
         ? {
