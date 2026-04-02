@@ -7,8 +7,9 @@
  *   1. Deletes M002, M003, M004 milestone dirs
  *   2. Deletes all *-SUMMARY.md, *-UAT.md, *-ASSESSMENT.md, *-VALIDATION.md from M001
  *   3. Resets all [x] checkboxes to [ ] in S0*-PLAN.md and T0*-PLAN.md files
- *   3b. Resets ROADMAP.md Done column (✅ → [ ])
- *   3c. Resets PROJECT.md to pending M001 only
+ *   3b. Restores T02-PLAN.md (colour question task)
+ *   3c. Resets ROADMAP.md Done column (✅ → [ ])
+ *   3d. Resets PROJECT.md to pending M001 only
  *   4. Wipes the GSD sqlite DB (gsd.db) and repopulates M001 planned state
  *      using GSD's own openDatabase() so the full current schema is applied
  *   5. Clears test-output/
@@ -73,7 +74,35 @@ function resetCheckboxes(dir) {
 }
 resetCheckboxes(join(milestonesDir, 'M001'));
 
-// ── 3b. Reset ROADMAP.md Done column (✅ → [ ]) ────────────────────────────────
+// ── 3b. Restore T02-PLAN.md in S01 (colour question task) ────────────────────
+// This task uses ask_user_questions to test the Telegram bridge. The plan file
+// is always written from source-of-truth here so resets don't lose it.
+const t02Path = join(milestonesDir, 'M001', 'slices', 'S01', 'tasks', 'T02-PLAN.md');
+writeFileSync(t02Path, `---
+estimated_steps: 3
+estimated_files: 1
+skills_used: []
+---
+
+# T02: Ask user for favourite colour and write output
+
+Steps:
+1. Call ask_user_questions with id="colour_choice", question="What is your favourite colour?", options=[{label:"Red"},{label:"Green"},{label:"Blue"},{label:"Yellow"}]
+2. Create the file test-output/m001-s1-t2.txt
+3. Write the chosen colour into it (e.g. "favourite colour: Red")
+
+## Inputs
+- (none)
+
+## Expected Output
+- \`test-output/m001-s1-t2.txt\`
+
+## Verification
+test -f test-output/m001-s1-t2.txt
+`);
+console.log(`Restored T02-PLAN.md (colour question)`);
+
+// ── 3c. Reset ROADMAP.md Done column (✅ → [ ]) ────────────────────────────────
 const roadmapPath = join(milestonesDir, 'M001', 'M001-ROADMAP.md');
 if (existsSync(roadmapPath)) {
   const original = readFileSync(roadmapPath, 'utf-8');
@@ -84,7 +113,7 @@ if (existsSync(roadmapPath)) {
   }
 }
 
-// ── 3c. Reset PROJECT.md ───────────────────────────────────────────────────────
+// ── 3d. Reset PROJECT.md ───────────────────────────────────────────────────────
 writeFileSync(join(gsdDir, 'PROJECT.md'), `# GSD Test Project
 
 A minimal GSD test project used to verify end-to-end GSD auto-mode execution and Telegram notification delivery.
@@ -155,7 +184,7 @@ for (const [sid, title] of Object.entries(sliceTitles)) {
 
 // Tasks
 const taskDefs = {
-  S01: ['Create m001-s1-t1 output', 'Create m001-s1-t2 output', 'Create m001-s1-t3 output'],
+  S01: ['Create m001-s1-t1 output', 'Ask user for favourite colour and write output', 'Create m001-s1-t3 output'],
   S02: ['Create m001-s2-t1 output', 'Create m001-s2-t2 output', 'Create m001-s2-t3 output'],
   S03: ['Create m001-s3-t1 output', 'Create m001-s3-t2 output', 'Create m001-s3-t3 output'],
 };

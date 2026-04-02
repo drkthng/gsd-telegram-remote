@@ -21,7 +21,7 @@ import type { PollLoop } from "./poller.js";
 import { isAllowedUser } from "./auth.js";
 import { registerPending, clearPending, waitForBusAnswer } from "./answer-bus.js";
 
-const DEFAULT_ANSWER_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_ANSWER_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +37,10 @@ export interface AskUserResult {
   response?: {
     answers: Record<string, { selected: string | string[]; notes?: string }>;
   };
+  /** true = user answered in time */
+  ok?: boolean;
+  /** true = timed out — caller should return isError:true to trigger GSD blocker */
+  timedOut?: boolean;
   cancelled?: boolean;
 }
 
@@ -228,8 +232,11 @@ export async function askUserViaTelegram(
     const busAnswer = await waitForBusAnswer(process.pid, promptId, timeout, signal);
 
     if (!busAnswer) {
-      await loop.sendMessage({ text: `⏰ No response after ${Math.round(timeout / 60_000)} min. Defaulting to first option.`, parse_mode: "HTML" });
-      return { cancelled: true };
+      await loop.sendMessage({
+        text: `⏰ No response after ${Math.round(timeout / 60_000)} min. The task is now <b>blocked</b> — auto-mode will pause.\nSend <b>/gsd auto</b> to resume once you're ready to answer.`,
+        parse_mode: "HTML",
+      });
+      return { timedOut: true };
     }
 
     await loop.clearInlineKeyboard(messageId);
@@ -237,13 +244,13 @@ export async function askUserViaTelegram(
 
     if (busAnswer.callbackData) {
       const result = parseCallbackAnswer(busAnswer.callbackData, questions, promptId);
-      if (result) return result;
+      if (result) return { ...result, ok: true };
       // "nota" — treat as free-text with empty (shouldn't normally happen via bus)
       return { cancelled: true };
     }
 
     if (busAnswer.text) {
-      return parseTextAnswer(busAnswer.text, questions);
+      return { ...parseTextAnswer(busAnswer.text, questions), ok: true };
     }
 
     return { cancelled: true };
@@ -254,8 +261,11 @@ export async function askUserViaTelegram(
     let waitingForText = false;
     const deadline = setTimeout(async () => {
       loop.clearAnswerHandler();
-      await loop.sendMessage({ text: `⏰ No response after ${Math.round(timeout / 60_000)} min. Defaulting to first option.`, parse_mode: "HTML" });
-      resolve({ cancelled: true });
+      await loop.sendMessage({
+        text: `⏰ No response after ${Math.round(timeout / 60_000)} min. The task is now <b>blocked</b> — auto-mode will pause.\nSend <b>/gsd auto</b> to resume once you're ready to answer.`,
+        parse_mode: "HTML",
+      });
+      resolve({ timedOut: true });
     }, timeout);
 
     if (signal) {
@@ -287,7 +297,7 @@ export async function askUserViaTelegram(
         loop.clearAnswerHandler();
         void loop.clearInlineKeyboard(messageId);
         void loop.sendMessage({ text: `✅ Got it.`, parse_mode: "HTML" });
-        resolve(result);
+        resolve({ ...result, ok: true });
         return true;
       }
 
@@ -310,7 +320,7 @@ export async function askUserViaTelegram(
       loop.clearAnswerHandler();
       void loop.clearInlineKeyboard(messageId);
       void loop.sendMessage({ text: `✅ Got it.`, parse_mode: "HTML" });
-      resolve(parseTextAnswer(msg.text, questions));
+      resolve({ ...parseTextAnswer(msg.text, questions), ok: true });
       return true;
     });
   });

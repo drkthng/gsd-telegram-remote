@@ -153,6 +153,14 @@ export default async function activate(pi: ExtensionAPI): Promise<void> {
         const bridgeConfig = { chatId: config.chatId, allowedUserIds: config.allowedUserIds, projectName };
         const result = await askUserViaTelegram(loop!, bridgeConfig, questions, ownsPolling, signal ?? undefined);
 
+        if (result.timedOut) {
+          return {
+            content: [{ type: "text" as const, text: "USER_ANSWER_REQUIRED: The user did not respond via Telegram within the timeout window. You MUST surface this as a GSD blocker immediately — call gsd_replan_slice with blockerDescription='Waiting for user answer via Telegram. User will send /gsd auto to resume once ready.' Do NOT proceed with a default answer or guess." }],
+            isError: true,
+            details: { timedOut: true },
+          };
+        }
+
         if (result.cancelled) {
           return {
             content: [{ type: "text" as const, text: "The user did not respond in time. The question was cancelled." }],
