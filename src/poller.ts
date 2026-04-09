@@ -138,6 +138,14 @@ export class PollLoop {
           await this.handleUpdate(update);
         }
       } catch (err) {
+        // Timeout/abort during long-polling is expected (network hiccup,
+        // system sleep, etc.) — retry silently without alarming the user.
+        if (
+          err instanceof DOMException && err.name === "AbortError" ||
+          err instanceof DOMException && err.name === "TimeoutError"
+        ) {
+          continue;
+        }
         const error = err instanceof Error ? err : new Error(String(err));
         this.opts.onError?.(error);
         await sleep(ERROR_BACKOFF_MS);
