@@ -1,32 +1,25 @@
 /**
  * poller.ts — Telegram getUpdates long-poll loop.
  *
- * Single source of truth for all incoming Telegram updates. Both command
- * dispatch and ask_user_questions answer routing go through here.
+ * Single source of truth for all incoming Telegram updates. Commands are
+ * dispatched via the dispatcher module.
  *
- * ANSWER ROUTING:
- * When ask_user_questions is in flight, index.ts calls registerAnswerHandler()
- * with a callback. The loop delivers callback_query and text messages to that
- * handler first. Commands are always dispatched regardless — /stop etc. still
- * work while a question is pending.
- *
- * There is no pause()/resume() mechanism. There is no second getUpdates loop
- * in the bridge. One loop, one offset, no races.
+ * PAUSE/RESUME:
+ * When the built-in ask_user_questions tool fires, index.ts calls pause()
+ * to let GSD's TelegramAdapter take over polling. resume() restarts our
+ * loop once the tool completes. pause() is atomic: it waits for any
+ * in-flight getUpdates to complete before resolving.
  */
 
 import type { TelegramUpdate, TelegramCallbackQuery, TelegramApiResponse } from "./types.js";
 import { isAllowedUser, getSenderId } from "./auth.js";
 import { parseCommand, executeCommand } from "./dispatcher.js";
 import { sendReply } from "./responder.js";
-import { routeToAnswerBus } from "./answer-bus.js";
 
 const POLL_TIMEOUT_SECONDS = 30;
 const ERROR_BACKOFF_MS = 5_000;
 const TELEGRAM_API = "https://api.telegram.org";
 const REQUEST_TIMEOUT_MS = 35_000;
-
-/** Called by the bridge to route answers. Return true to consume the update. */
-export type AnswerHandler = (update: TelegramUpdate) => boolean;
 
 export interface PollLoopOptions {
   botToken: string;
@@ -38,7 +31,8 @@ export interface PollLoopOptions {
 export class PollLoop {
   private active = false;
   private lastUpdateId = 0;
-  private answerHandler: AnswerHandler | null = null;
+  private paused = false;
+  private pauseResolver: (() => void) | null = null;
   private readonly opts: PollLoopOptions;
 
   constructor(opts: PollLoopOptions) {
@@ -56,19 +50,26 @@ export class PollLoop {
   }
 
   /**
-   * Register an answer handler for an in-flight ask_user_questions.
-   * The handler is called for every update. Return true to consume it
-   * (prevents command dispatch for that update). Commands are still
-   * dispatched even when a handler is registered — returning false
-   * lets normal dispatch proceed.
+   * Pause the poll loop. Returns a promise that resolves after the current
+   * in-flight getUpdates cycle completes — safe to hand off polling to
+   * another consumer (e.g. GSD TelegramAdapter for ask_user_questions).
    */
-  registerAnswerHandler(handler: AnswerHandler): void {
-    this.answerHandler = handler;
+  pause(): Promise<void> {
+    if (this.paused) return Promise.resolve();
+    this.paused = true;
+    console.log("[gsd-telegram-remote] PollLoop paused (ask_user_questions)");
+    return new Promise<void>((resolve) => {
+      this.pauseResolver = resolve;
+    });
   }
 
-  /** Remove the answer handler when the question is resolved or timed out. */
-  clearAnswerHandler(): void {
-    this.answerHandler = null;
+  /** Resume the poll loop after a pause. */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.pauseResolver?.();
+    this.pauseResolver = null;
+    console.log("[gsd-telegram-remote] PollLoop resumed");
   }
 
   /** Send a one-way notification to the configured chat. Non-blocking, non-fatal. */
@@ -133,6 +134,22 @@ export class PollLoop {
     while (this.active) {
       try {
         const updates = await this.getUpdates();
+
+        // If paused during getUpdates, resolve the pause promise (caller knows
+        // the in-flight request finished) and wait until resumed.
+        if (this.paused) {
+          this.pauseResolver?.();
+          this.pauseResolver = null;
+          await new Promise<void>((resolve) => {
+            const check = (): void => {
+              if (!this.paused || !this.active) { resolve(); return; }
+              setTimeout(check, 50);
+            };
+            check();
+          });
+          if (!this.active) break;
+        }
+
         for (const update of updates) {
           if (!this.active) break;
           await this.handleUpdate(update);
@@ -181,13 +198,6 @@ export class PollLoop {
   }
 
   private async handleUpdate(update: TelegramUpdate): Promise<void> {
-    // Offer every update to the answer handler first.
-    // If it returns true, the update is consumed — skip command dispatch.
-    if (this.answerHandler?.(update)) return;
-
-    // Route to answer bus for non-master sessions with pending questions.
-    if (await routeToAnswerBus(update, this.opts.botToken)) return;
-
     // Normal command dispatch — text messages only.
     const msg = update.message;
     if (!msg?.text) return;

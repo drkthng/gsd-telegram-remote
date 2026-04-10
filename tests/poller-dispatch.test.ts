@@ -204,17 +204,17 @@ describe("PollLoop dispatch integration", () => {
     expect(sendMessageCalls).toHaveLength(0);
   }, 5000);
 
-  // ── Test 3: Answer handler consumes updates before dispatch ─────────────────
+  // ── Test 3: Paused loop does not dispatch commands ──────────────────────────
 
-  it("answer handler consumes matching updates and blocks command dispatch", async () => {
+  it("paused loop stops polling — no dispatch while paused, resumes after resume()", async () => {
     let getUpdatesCallCount = 0;
-    const handledUpdates: number[] = [];
 
     fetchSpy.mockImplementation(async (input) => {
       const url = String(input);
 
       if (url.includes("getUpdates")) {
         getUpdatesCallCount++;
+        // First call returns a command; subsequent calls return empty
         const body = getUpdatesCallCount === 1
           ? makeUpdateResponse(300, ALLOWED_USER, CHAT_ID_NUM, "/help")
           : EMPTY_UPDATES;
@@ -229,26 +229,31 @@ describe("PollLoop dispatch integration", () => {
       chatId: CHAT_ID,
       allowedUserIds: [ALLOWED_USER],
     });
-
-    // Register an answer handler that consumes ALL updates
-    loop.registerAnswerHandler((update) => {
-      handledUpdates.push(update.update_id);
-      return true; // consume — prevent command dispatch
-    });
-
     loop.start();
 
-    await new Promise<void>((r) => setTimeout(r, 300));
+    // Wait for the first getUpdates cycle to complete and dispatch /help
+    await waitForFetchCall(fetchSpy, "sendMessage");
+
+    // Record the call count before pausing
+    const callsBeforePause = getUpdatesCallCount;
+
+    // Pause — the loop should stop making new getUpdates calls
+    const pausePromise = loop.pause();
+    // Let the current in-flight getUpdates finish so pausePromise resolves
+    await pausePromise;
+
+    // Wait a bit and verify no new getUpdates calls were made while paused
+    await new Promise<void>((r) => setTimeout(r, 200));
+    expect(getUpdatesCallCount).toBeLessThanOrEqual(callsBeforePause + 1);
+
+    const callsWhilePaused = getUpdatesCallCount;
+
+    // Resume — polling should restart
+    loop.resume();
+    await new Promise<void>((r) => setTimeout(r, 200));
+    expect(getUpdatesCallCount).toBeGreaterThan(callsWhilePaused);
+
     loop.stop();
-
-    // Handler should have seen the update
-    expect(handledUpdates).toContain(300);
-
-    // sendMessage (command reply) should NOT have been called
-    const sendMessageCalls = fetchSpy.mock.calls.filter((call) =>
-      String(call[0]).includes("sendMessage"),
-    );
-    expect(sendMessageCalls).toHaveLength(0);
   }, 5000);
 
 });

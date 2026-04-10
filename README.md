@@ -2,7 +2,7 @@
 
 Remote control your GSD auto-mode from Telegram. Start, stop, pause, and monitor auto-mode execution with instant push notifications on task/slice/milestone completion.
 
-**Status**: M001–M004 complete — rich `[project] M/S/T` path notifications, budget alerts, live transport validated. 99 tests, 7 suites.
+**Status**: M001–M006 complete — rich `[project] M/S/T` path notifications, budget alerts, cross-project command dispatch, poll-lock coordination, dead-code cleanup. 174 tests, 9 suites.
 
 ## Why This Exists
 
@@ -120,13 +120,18 @@ Telegram Bot API
 | Module | Purpose |
 |--------|---------|
 | `src/index.ts` | Extension entry point — `activate()`, event hooks, notification dispatch |
+| `src/aliases.ts` | Command alias resolution (e.g. `/go` → `/auto`) |
+| `src/auth.ts` | User ID allowlist validation |
+| `src/command-bus.ts` | Cross-project command routing via GSD command bus |
 | `src/config.ts` | Config from preferences.md + AuthStorage + env vars |
 | `src/dispatcher.ts` | Command parsing and routing (all 6 commands) |
 | `src/notifier.ts` | Pure state-transition notification logic — `computeNotifications()`, `computeBudgetAlert()` |
+| `src/poll-lock.ts` | Filesystem-based poll-loop lock for single-instance coordination |
 | `src/poller.ts` | Telegram long-poll loop with pause/resume/notify |
+| `src/process-utils.ts` | Child-process helpers for spawning GSD auto-mode |
 | `src/projects.ts` | Scan ~/.gsd/projects/ for project listing |
-| `src/auth.ts` | User ID allowlist validation |
 | `src/responder.ts` | Telegram sendMessage wrapper |
+| `src/types.ts` | Shared TypeScript type definitions |
 
 ### Key Design Decisions
 
@@ -138,7 +143,7 @@ Telegram Bot API
 ## Testing
 
 ```bash
-npm test          # 99 tests, 7 suites
+npm test          # 174 tests, 9 suites
 npm run build     # TypeScript compile check
 npm run install-ext  # Build + install to ~/.pi/agent/extensions/
 ```
@@ -171,6 +176,8 @@ Each has M004 with 2 slices × 3 tasks. S01 tests notification flow (trivial tas
 - [x] **M002**: Build pipeline — `npm run install-ext` produces loadable `dist/index.js`
 - [x] **M003**: Rich `/status` — returns `🟢 M001/S02/T01 (executing)` with milestone/slice/task detail
 - [x] **M004**: Rich notifications + budget alerts — `[project] M/S/T` path format, threshold alerts at 75/80/90/100%
+- [x] **M005**: Cross-project command dispatch — command aliases, poll-lock coordination, process management
+- [x] **M006**: Eliminate built-in conflicts — remove dead-code modules, streamline to native remote-questions
 
 ## License
 
